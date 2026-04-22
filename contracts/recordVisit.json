@@ -1,0 +1,11 @@
+{
+  "entityType": "customer",
+  "entityId": "string",
+  "visitDate": "YYYY-MM-DD",
+  "categories": [
+    {
+      "categoryCode": "string",
+      "subcategoryCodes": ["string"]
+    }
+  ]
+}

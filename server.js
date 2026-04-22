@@ -1,0 +1,156 @@
+const express = require('express');
+const cors = require('cors');
+const supabase = require('./supabaseClient');
+
+function convertDateToISO(ddmmyy) {
+  const [day, month, shortYear] = ddmmyy.split('/');
+  const year = Number(shortYear) < 50
+    ? `20${shortYear}`
+    : `19${shortYear}`;
+
+  return `${year}-${month}-${day}`;
+}
+
+const app = express();
+app.use(cors({
+  origin: 'http://localhost:5173',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
+app.use(express.json());
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.get('/db-test', async (req, res) => {
+  const { data, error } = await supabase
+    .from('category_discussion_history')
+    .select('*')
+    .limit(1);
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json({ success: true, data });
+});
+
+
+app.post('/visits/record', async (req, res) => {
+  if (!req.body) {
+    return res.status(400).json({ error: 'Missing request body' });
+  }
+
+  const {
+    entityType,
+    entityId,
+    visitDate,
+    categories
+  } = req.body;
+
+const isoVisitDate = convertDateToISO(visitDate);
+
+  for (const category of categories) {
+    const { categoryCode, subcategoryCodes } = category;
+
+    // Category-level (no subcategories)
+    if (!subcategoryCodes || subcategoryCodes.length === 0) {
+      const { error } = await supabase.rpc('upsert_category_discussion', {
+        p_entity_type: entityType,
+        p_entity_id: entityId,
+        p_category_code: categoryCode,
+        p_subcategory_code: null,
+        p_visit_date: isoVisitDate
+      });
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+    // Subcategory-level
+    } else {
+      for (const subCode of subcategoryCodes) {
+        const { error } = await supabase.rpc('upsert_category_discussion', {
+          p_entity_type: entityType,
+          p_entity_id: entityId,
+          p_category_code: categoryCode,
+          p_subcategory_code: subCode,
+          p_visit_date: isoVisitDate
+        });
+
+        if (error) {
+          return res.status(500).json({ error: error.message });
+        }
+      }
+    }
+  }
+
+  res.json({ success: true });
+});
+
+app.get('/customers/:customerCode/readiness', async (req, res) => {
+  const { customerCode } = req.params;
+
+  const { data, error } = await supabase
+    .from('customer_readiness_score')
+    .select('*')
+    .eq('customer_code', customerCode);
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  // data is an array; return first row or null
+  res.json({ success: true, data: data[0] ?? null });
+});
+
+app.get('/customers/:customerCode/dashboard', async (req, res) => {
+  const { customerCode } = req.params;
+
+  const { data, error } = await supabase
+    .from('customer_crm_kpis')
+    .select('*')
+    .eq('customer_code', customerCode)
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json({ success: true, data });
+});
+
+app.get('/customers/:customerCode/top-categories', async (req, res) => {
+  const { customerCode } = req.params;
+
+  const { data, error } = await supabase
+    .from('customer_top_3_categories')
+    .select('*')
+    .eq('customer_code', customerCode);
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json({ success: true, data });
+});
+
+app.get('/customers/:customerCode/neglected-categories', async (req, res) => {
+  const { customerCode } = req.params;
+
+  const { data, error } = await supabase
+    .from('customer_neglected_categories')
+    .select('*')
+    .eq('customer_code', customerCode);
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json({ success: true, data });
+});
+
+app.listen(3001, () => {
+  console.log('Backend running on http://localhost:3001');
+});
