@@ -1,6 +1,9 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const supabase = require('./supabaseClient');
+const erpRoutes = require('./routes/erp');
 
 function convertDateToISO(ddmmyy) {
   const [day, month, shortYear] = ddmmyy.split('/');
@@ -18,6 +21,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type'],
 }));
 app.use(express.json());
+app.use('/api/erp', erpRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -36,6 +40,9 @@ app.get('/db-test', async (req, res) => {
   res.json({ success: true, data });
 });
 
+app.get('/', (req, res) => {
+  res.send('CRM backend running');
+});
 
 app.post('/visits/record', async (req, res) => {
   if (!req.body) {
