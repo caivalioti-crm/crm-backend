@@ -93,4 +93,50 @@ router.get('/categories/purchased', async (req, res) => {
   }
 });
 
+// Sales by area
+router.get('/sales/by-area', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+
+    const [current, compare] = await Promise.all([
+      supabase.rpc('get_sales_by_area', {
+        p_from: from || '2022-01-01',
+        p_to: to || new Date().toISOString().split('T')[0]
+      }),
+      supabase.rpc('get_sales_by_area', {
+        p_from: req.query.compareFrom || '2022-01-01',
+        p_to: req.query.compareTo || new Date().toISOString().split('T')[0]
+      })
+    ]);
+
+    if (current.error) return res.status(500).json({ error: current.error.message });
+    if (compare.error) return res.status(500).json({ error: compare.error.message });
+
+    // Merge current + compare
+    const compareMap = new Map(
+      (compare.data || []).map(r => [r.area, Number(r.total_netamnt)])
+    );
+
+    const result = (current.data || []).map(row => {
+      const currentAmt = Number(row.total_netamnt);
+      const compareAmt = compareMap.get(row.area) ?? 0;
+      const growth = compareAmt > 0 ? ((currentAmt - compareAmt) / compareAmt) * 100 : null;
+
+      return {
+        area: row.area,
+        netAmount: currentAmt,
+        customerCount: Number(row.customer_count),
+        compareAmount: compareAmt,
+        growth,
+      };
+    });
+
+    res.json(result);
+
+  } catch (err) {
+    console.error('Unexpected error:', err);
+    res.status(500).json({ error: 'Unexpected server error' });
+  }
+});
+
 module.exports = router;
