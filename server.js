@@ -1,9 +1,10 @@
 require('dotenv').config();
 
+const { supabase } = require('./supabaseClient');
 const express = require('express');
 const cors = require('cors');
-const supabase = require('./supabaseClient');
 const erpRoutes = require('./routes/erp');
+const { authMiddleware } = require('./middleware/auth');
 
 function convertDateToISO(ddmmyy) {
   const [day, month, shortYear] = ddmmyy.split('/');
@@ -18,11 +19,14 @@ const app = express();
 app.use(cors({
   origin: 'http://localhost:5173',
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json());
-app.use('/api/erp', erpRoutes);
+app.use('/api/erp', authMiddleware, erpRoutes);
 
+app.get('/api/me', authMiddleware, async (req, res) => {
+  res.json(req.user);
+});
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
