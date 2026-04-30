@@ -139,4 +139,52 @@ router.get('/sales/by-area', async (req, res) => {
   }
 });
 
+// Sales by city
+router.get('/sales/by-city', async (req, res) => {
+  try {
+    const { from, to, compareFrom, compareTo, area } = req.query;
+
+    const [current, compare] = await Promise.all([
+      supabase.rpc('get_sales_by_city', {
+        p_from: from || '2022-01-01',
+        p_to: to || new Date().toISOString().split('T')[0],
+        p_area: area || null
+      }),
+      supabase.rpc('get_sales_by_city', {
+        p_from: compareFrom || '2022-01-01',
+        p_to: compareTo || new Date().toISOString().split('T')[0],
+        p_area: area || null
+      })
+    ]);
+
+    if (current.error) return res.status(500).json({ error: current.error.message });
+    if (compare.error) return res.status(500).json({ error: compare.error.message });
+
+    const compareMap = new Map(
+      (compare.data || []).map(r => [`${r.area}|${r.city}`, Number(r.total_netamnt)])
+    );
+
+    const result = (current.data || []).map(row => {
+      const currentAmt = Number(row.total_netamnt);
+      const compareAmt = compareMap.get(`${row.area}|${row.city}`) ?? 0;
+      const growth = compareAmt > 0 ? ((currentAmt - compareAmt) / compareAmt) * 100 : null;
+
+      return {
+        area: row.area,
+        city: row.city,
+        netAmount: currentAmt,
+        customerCount: Number(row.customer_count),
+        compareAmount: compareAmt,
+        growth,
+      };
+    });
+
+    res.json(result);
+
+  } catch (err) {
+    console.error('Unexpected error:', err);
+    res.status(500).json({ error: 'Unexpected server error' });
+  }
+});
+
 module.exports = router;
