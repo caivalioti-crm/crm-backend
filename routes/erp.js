@@ -7,7 +7,10 @@ const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 // Customers
 router.get('/customers', async (req, res) => {
   try {
-    const { data, error } = await supabase.rpc('select_vw_crm_customers');
+    const { data, error } = await supabase
+      .from('vw_crm_customers')
+      .select('*')
+      .limit(5000);
 
     if (error) {
       console.error('Supabase error:', error);
@@ -31,29 +34,34 @@ router.get('/customers', async (req, res) => {
 // Sales
 router.get('/sales', async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('vw_crm_sales')
-      .select('trdr, trndate, series, findoc, netamnt')
-      .not('netamnt', 'is', null);
+    const { from, to } = req.query;
+
+    const { data, error } = await supabase.rpc('get_sales_summary', {
+      p_from: from || '2022-01-01',
+      p_to: to || new Date().toISOString().split('T')[0]
+    });
 
     if (error) {
       console.error('Supabase sales error:', error);
       return res.status(500).json({ error: error.message });
     }
 
-    const mapped = data.map(row => ({
+    const mapped = (data || []).map(row => ({
       customerCode: String(row.trdr),
-      trnDate: row.trndate,
-      netAmount: Number(row.netamnt ?? 0),
-      series: row.series,
-      salesRepId: 'demo'
+      netAmount: Number(row.total_netamnt ?? 0),
+      invoiceCount: Number(row.invoice_count ?? 0),
     }));
 
     if (FULL_ACCESS_ROLES.includes(req.user.role)) {
       return res.json(mapped);
     }
 
-    const { data: customers, error: custError } = await supabase.rpc('select_vw_crm_customers');
+    // Rep filtering — use direct view query with limit
+    const { data: customers, error: custError } = await supabase
+      .from('vw_crm_customers')
+      .select('salesman_code, trdr_id')
+      .limit(5000);
+
     if (custError) return res.status(500).json({ error: 'Failed to filter sales' });
 
     const repCustomerCodes = customers
