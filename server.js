@@ -27,11 +27,12 @@ app.use('/api/erp', authMiddleware, erpRoutes);
 app.get('/api/me', authMiddleware, async (req, res) => {
   res.json(req.user);
 });
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.get('/db-test', async (req, res) => {
+app.get('/db-test', authMiddleware, async (req, res) => {
   const { data, error } = await supabase
     .from('category_discussion_history')
     .select('*')
@@ -48,7 +49,7 @@ app.get('/', (req, res) => {
   res.send('CRM backend running');
 });
 
-app.post('/visits/record', async (req, res) => {
+app.post('/visits/record', authMiddleware, async (req, res) => {
   if (!req.body) {
     return res.status(400).json({ error: 'Missing request body' });
   }
@@ -60,12 +61,11 @@ app.post('/visits/record', async (req, res) => {
     categories
   } = req.body;
 
-const isoVisitDate = convertDateToISO(visitDate);
+  const isoVisitDate = convertDateToISO(visitDate);
 
   for (const category of categories) {
     const { categoryCode, subcategoryCodes } = category;
 
-    // Category-level (no subcategories)
     if (!subcategoryCodes || subcategoryCodes.length === 0) {
       const { error } = await supabase.rpc('upsert_category_discussion', {
         p_entity_type: entityType,
@@ -79,7 +79,6 @@ const isoVisitDate = convertDateToISO(visitDate);
         return res.status(500).json({ error: error.message });
       }
 
-    // Subcategory-level
     } else {
       for (const subCode of subcategoryCodes) {
         const { error } = await supabase.rpc('upsert_category_discussion', {
@@ -100,7 +99,7 @@ const isoVisitDate = convertDateToISO(visitDate);
   res.json({ success: true });
 });
 
-app.get('/customers/:customerCode/readiness', async (req, res) => {
+app.get('/customers/:customerCode/readiness', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
 
   const { data, error } = await supabase
@@ -112,11 +111,10 @@ app.get('/customers/:customerCode/readiness', async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 
-  // data is an array; return first row or null
   res.json({ success: true, data: data[0] ?? null });
 });
 
-app.get('/customers/:customerCode/dashboard', async (req, res) => {
+app.get('/customers/:customerCode/dashboard', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
 
   const { data, error } = await supabase
@@ -132,7 +130,7 @@ app.get('/customers/:customerCode/dashboard', async (req, res) => {
   res.json({ success: true, data });
 });
 
-app.get('/customers/:customerCode/top-categories', async (req, res) => {
+app.get('/customers/:customerCode/top-categories', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
 
   const { data, error } = await supabase
@@ -147,7 +145,7 @@ app.get('/customers/:customerCode/top-categories', async (req, res) => {
   res.json({ success: true, data });
 });
 
-app.get('/customers/:customerCode/neglected-categories', async (req, res) => {
+app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
 
   const { data, error } = await supabase
