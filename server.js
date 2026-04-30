@@ -160,6 +160,84 @@ app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (
   res.json({ success: true, data });
 });
 
+// Create a new visit
+app.post('/api/visits', authMiddleware, async (req, res) => {
+  const { customer_code, visit_date, visit_time, visit_type, notes, tasks } = req.body;
+
+  if (!customer_code || !visit_date) {
+    return res.status(400).json({ error: 'customer_code and visit_date are required' });
+  }
+
+  // Insert visit
+  const { data: visit, error: visitError } = await supabase
+    .from('crm_visits')
+    .insert({
+      customer_code,
+      salesman_code: req.user.salesman_code ?? '',
+      user_id: req.user.id,
+      visit_date,
+      visit_time: visit_time || null,
+      visit_type: visit_type || 'in-person',
+      notes: notes || '',
+    })
+    .select()
+    .single();
+
+  if (visitError) {
+    console.error('Visit insert error:', visitError);
+    return res.status(500).json({ error: visitError.message });
+  }
+
+  // Insert tasks if any
+  if (tasks && tasks.length > 0) {
+    const taskRows = tasks.map(t => ({
+      visit_id: visit.id,
+      description: t.description,
+      reminder_date: t.reminderDate || null,
+      status: 'not-started',
+    }));
+
+    const { error: taskError } = await supabase
+      .from('crm_visit_tasks')
+      .insert(taskRows);
+
+    if (taskError) {
+      console.error('Task insert error:', taskError);
+      return res.status(500).json({ error: taskError.message });
+    }
+  }
+
+  res.json({ success: true, visit });
+});
+
+// Get visits for current user
+app.get('/api/visits', authMiddleware, async (req, res) => {
+  const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+  let query = supabase
+    .from('crm_visits')
+    .select(`
+      *,
+      crm_visit_tasks (*)
+    `)
+    .order('visit_date', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  // Reps only see their own visits
+  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+    query = query.eq('salesman_code', req.user.salesman_code);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error('Visits fetch error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json(data);
+});
+
 app.listen(3001, () => {
   console.log('Backend running on http://localhost:3001');
 });
