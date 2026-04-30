@@ -18,7 +18,7 @@ function convertDateToISO(ddmmyy) {
 const app = express();
 app.use(cors({
   origin: 'http://localhost:5173',
-  methods: ['GET', 'POST', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 app.use(express.json());
@@ -218,12 +218,13 @@ app.get('/api/visits', authMiddleware, async (req, res) => {
     .from('crm_visits')
     .select(`
       *,
-      crm_visit_tasks (*)
+      crm_visit_tasks (*),
+      crm_visit_categories (*),
+      crm_visit_comments (*)
     `)
     .order('visit_date', { ascending: false })
     .order('created_at', { ascending: false });
 
-  // Reps only see their own visits
   if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
     query = query.eq('salesman_code', req.user.salesman_code);
   }
@@ -251,6 +252,102 @@ app.get('/api/categories', authMiddleware, async (req, res) => {
   }
 
   res.json(data);
+});
+
+// Add comment to a visit
+app.post('/api/visits/:id/comments', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { comment } = req.body;
+
+  if (!comment?.trim()) {
+    return res.status(400).json({ error: 'Comment is required' });
+  }
+
+  const { data, error } = await supabase
+    .from('crm_visit_comments')
+    .insert({
+      visit_id: id,
+      user_id: req.user.id,
+      commenter_name: req.user.full_name,
+      comment: comment.trim(),
+      is_read: false,
+    })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// Mark comment as read
+app.patch('/api/visits/comments/:commentId/read', authMiddleware, async (req, res) => {
+  const { commentId } = req.params;
+
+  const { error } = await supabase
+    .from('crm_visit_comments')
+    .update({ is_read: true })
+    .eq('id', commentId);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// Delete a visit (own visits for reps, any for managers/admins)
+app.delete('/api/visits/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+  let query = supabase.from('crm_visits').delete().eq('id', id);
+
+  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+    query = query.eq('user_id', req.user.id);
+  }
+
+  const { error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// Edit a visit (own visits for reps, any for managers/admins)
+app.patch('/api/visits/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { notes, visit_type, visit_date, visit_time, categories } = req.body;
+  const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+  let query = supabase
+    .from('crm_visits')
+    .update({ notes, visit_type, visit_date, visit_time })
+    .eq('id', id);
+
+  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+    query = query.eq('user_id', req.user.id);
+  }
+
+const { data, error } = await query.select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Update categories if provided
+  if (categories !== undefined) {
+    await supabase.from('crm_visit_categories').delete().eq('visit_id', id);
+    if (categories.length > 0) {
+      const categoryRows = categories.map(c => ({
+        visit_id: id,
+        category_code: c.categoryCode,
+        subcategory_code: c.subcategoryCode || null,
+      }));
+      const { error: catError } = await supabase.from('crm_visit_categories').insert(categoryRows);
+      if (catError) return res.status(500).json({ error: catError.message });
+    }
+  }
+
+const { data: fullVisit, error: fetchError } = await supabase
+    .from('crm_visits')
+    .select(`*, crm_visit_tasks(*), crm_visit_categories(*), crm_visit_comments(*)`)
+    .eq('id', id)
+    .single();
+
+  if (fetchError) return res.status(500).json({ error: fetchError.message });
+  res.json(fullVisit);
 });
 
 app.listen(3001, () => {
