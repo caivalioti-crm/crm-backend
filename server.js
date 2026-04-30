@@ -238,6 +238,21 @@ app.get('/api/visits', authMiddleware, async (req, res) => {
   res.json(data);
 });
 
+// Get category master
+app.get('/api/categories', authMiddleware, async (req, res) => {
+  const { data, error } = await supabase
+    .from('crm_category_master')
+    .select('category_code, parent_code, level, full_name, short_name')
+    .order('category_code');
+
+  if (error) {
+    console.error('Categories fetch error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+
+  res.json(data);
+});
+
 app.listen(3001, () => {
   console.log('Backend running on http://localhost:3001');
 });
