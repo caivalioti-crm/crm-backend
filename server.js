@@ -119,7 +119,6 @@ app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (
 });
 
 // ─── VISITS ────────────────────────────────────────────────────────────────
-
 app.post('/api/visits', authMiddleware, async (req, res) => {
   const { customer_code, visit_date, visit_time, visit_type, notes, tasks, categories } = req.body;
 
@@ -181,7 +180,9 @@ app.post('/api/visits', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/visits', authMiddleware, async (req, res) => {
+  console.log('GET /api/visits query:', req.query);
   const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+  const { customer_code } = req.query;
 
   let query = supabase
     .from('crm_visits')
@@ -198,13 +199,16 @@ app.get('/api/visits', authMiddleware, async (req, res) => {
     query = query.eq('salesman_code', req.user.salesman_code);
   }
 
+  if (customer_code) {
+    query = query.eq('customer_code', customer_code);
+  }
+
   const { data, error } = await query;
   if (error) {
     console.error('Visits fetch error:', error);
     return res.status(500).json({ error: error.message });
   }
 
-  // Fetch user profiles to get full names
   const { data: profiles } = await supabase
     .from('crm_user_profiles')
     .select('id, full_name');
@@ -373,6 +377,354 @@ app.patch('/api/visits/:id', authMiddleware, async (req, res) => {
     owner_name: profileMap.get(fullVisit.user_id) ?? fullVisit.salesman_code ?? 'Unknown',
   });
 });
+
+// ─── PROSPECTS ────────────────────────────────────────────────────────────────
+
+// Get competitors list
+app.get('/api/competitors', authMiddleware, async (req, res) => {
+  const { data, error } = await supabase
+    .from('crm_competitors')
+    .select('*')
+    .eq('is_active', true)
+    .order('name');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// Add new competitor
+app.post('/api/competitors', authMiddleware, async (req, res) => {
+  const { name } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required' });
+  const { data, error } = await supabase
+    .from('crm_competitors')
+    .insert({ name: name.trim() })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// Get prospects
+app.get('/api/prospects', authMiddleware, async (req, res) => {
+  const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+  let query = supabase
+    .from('crm_prospects')
+    .select(`*, crm_prospect_visits(*)`)
+    .order('created_at', { ascending: false });
+
+  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+    query = query.eq('salesman_code', req.user.salesman_code);
+  }
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Check conversion — match vat_number against stg_soft1_trdr.afm
+  const vatNumbers = (data || []).map(p => p.vat_number).filter(Boolean);
+  let convertedMap = new Map();
+  if (vatNumbers.length > 0) {
+    const { data: matches } = await supabase
+      .from('stg_soft1_trdr')
+      .select('trdr_code, afm')
+      .in('afm', vatNumbers)
+      .eq('company', 1000)
+      .eq('is_active', true)
+      .eq('sodtype', 13);
+    (matches || []).forEach(m => convertedMap.set(m.afm, m.trdr_code));
+  }
+
+  const prospects = (data || []).map(p => ({
+    ...p,
+    converted_customer_code: p.vat_number ? convertedMap.get(p.vat_number) ?? null : null,
+    status: p.vat_number && convertedMap.has(p.vat_number) ? 'converted' : p.status,
+  }));
+
+  res.json(prospects);
+});
+
+// Create prospect
+app.post('/api/prospects', authMiddleware, async (req, res) => {
+  console.log('POST /api/prospects body:', JSON.stringify(req.body, null, 2));
+  const {
+    business_name, owner_name, phone, mobile, email,
+    address, city, area, vat_number, notes, status,
+    competitor_info, shop_profile,
+  } = req.body;
+
+  if (!business_name?.trim()) return res.status(400).json({ error: 'Business name is required' });
+
+  console.log('Inserting prospect...');
+  const { data: prospect, error } = await supabase
+    .from('crm_prospects')
+    .insert({
+      business_name: business_name.trim(),
+      owner_name, phone, mobile, email,
+      address, city, area, vat_number, notes,
+      status: status || 'new_lead',
+      assigned_rep_id: req.user.id,
+      salesman_code: req.user.salesman_code ?? '',
+    })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Prospect insert error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+
+  console.log('Prospect inserted:', prospect.id);
+
+  // Save competitor info
+  if (competitor_info) {
+    console.log('Inserting competitor info...');
+    const { error: compError } = await supabase.from('crm_entity_competitor_info').insert({
+      entity_type: 'prospect',
+      entity_id: prospect.id,
+      ...competitor_info,
+    });
+    if (compError) console.error('Competitor info error:', compError);
+  }
+
+  // Save shop profile
+  if (shop_profile) {
+    console.log('Inserting shop profile...');
+    const { error: shopError } = await supabase.from('crm_entity_shop_profile').insert({
+      entity_type: 'prospect',
+      entity_id: prospect.id,
+      ...shop_profile,
+    });
+    if (shopError) console.error('Shop profile error:', shopError);
+  }
+
+  console.log('Done!');
+  res.json(prospect);
+});
+
+// Update prospect
+app.patch('/api/prospects/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const {
+    business_name, owner_name, phone, mobile, email,
+    address, city, area, vat_number, notes, status,
+    competitor_info, shop_profile,
+  } = req.body;
+  const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+  let query = supabase
+    .from('crm_prospects')
+    .update({
+      business_name, owner_name, phone, mobile, email,
+      address, city, area, vat_number, notes, status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+
+  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+    query = query.eq('assigned_rep_id', req.user.id);
+  }
+
+  const { data, error } = await query.select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Upsert competitor info
+  if (competitor_info !== undefined) {
+    await supabase.from('crm_entity_competitor_info').upsert({
+      entity_type: 'prospect',
+      entity_id: id,
+      ...competitor_info,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
+  // Upsert shop profile
+  if (shop_profile !== undefined) {
+    await supabase.from('crm_entity_shop_profile').upsert({
+      entity_type: 'prospect',
+      entity_id: id,
+      ...shop_profile,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
+  res.json(data);
+});
+
+// Delete prospect
+app.delete('/api/prospects/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+  let query = supabase.from('crm_prospects').delete().eq('id', id);
+  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+    query = query.eq('assigned_rep_id', req.user.id);
+  }
+
+  const { error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// Get entity profile (competitor + shop) — works for both prospects and customers
+app.get('/api/entity-profile/:type/:id', authMiddleware, async (req, res) => {
+  const { type, id } = req.params;
+
+  const [competitorRes, shopRes] = await Promise.all([
+    supabase.from('crm_entity_competitor_info')
+      .select('*').eq('entity_type', type).eq('entity_id', id).single(),
+    supabase.from('crm_entity_shop_profile')
+      .select('*').eq('entity_type', type).eq('entity_id', id).single(),
+  ]);
+
+  res.json({
+    competitor_info: competitorRes.data ?? null,
+    shop_profile: shopRes.data ?? null,
+  });
+});
+
+// Upsert entity profile
+app.post('/api/entity-profile/:type/:id', authMiddleware, async (req, res) => {
+  const { type, id } = req.params;
+  const { competitor_info, shop_profile } = req.body;
+
+  if (competitor_info !== undefined) {
+    await supabase.from('crm_entity_competitor_info').upsert({
+      entity_type: type,
+      entity_id: id,
+      ...competitor_info,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
+  if (shop_profile !== undefined) {
+    await supabase.from('crm_entity_shop_profile').upsert({
+      entity_type: type,
+      entity_id: id,
+      ...shop_profile,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
+  res.json({ success: true });
+});
+
+// Prospect visits
+app.get('/api/prospects/:id/visits', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { data, error } = await supabase
+    .from('crm_prospect_visits')
+    .select(`*, crm_prospect_visit_categories(*)`)
+    .eq('prospect_id', id)
+    .order('visit_date', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/api/prospects/:id/visits', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { visit_date, visit_type, notes, outcome, categories } = req.body;
+
+  if (!visit_date) return res.status(400).json({ error: 'visit_date is required' });
+
+  const { data: visit, error } = await supabase
+    .from('crm_prospect_visits')
+    .insert({
+      prospect_id: id,
+      user_id: req.user.id,
+      visit_date,
+      visit_type: visit_type || 'in-person',
+      notes,
+      outcome: outcome || 'interested',
+    })
+    .select()
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Insert categories
+  if (categories && categories.length > 0) {
+    const categoryRows = categories.map(c => ({
+      prospect_visit_id: visit.id,
+      category_code: c.categoryCode,
+      subcategory_code: c.subcategoryCode || null,
+    }));
+    await supabase.from('crm_prospect_visit_categories').insert(categoryRows);
+  }
+
+  // Update prospect status
+  await supabase.from('crm_prospects')
+    .update({ status: 'visited', updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('status', 'new_lead');
+
+  res.json(visit);
+});
+
+// VAT check
+app.get('/api/vat-check/:vat', authMiddleware, async (req, res) => {
+  const { vat } = req.params;
+
+  // Check in stg_soft1_trdr (active and inactive)
+  const { data: customers } = await supabase
+    .from('stg_soft1_trdr')
+    .select('trdr_code, trdr_name, city, area_name, is_active')
+    .eq('afm', vat.trim())
+    .eq('company', 1000)
+    .eq('sodtype', 13)
+    .limit(1);
+
+  if (customers && customers.length > 0) {
+    const c = customers[0];
+    return res.json({
+      type: c.is_active ? 'existing_customer' : 'inactive_customer',
+      data: c,
+    });
+  }
+
+  // Check existing prospects
+  const { data: prospects } = await supabase
+    .from('crm_prospects')
+    .select('id, business_name, city, area')
+    .eq('vat_number', vat.trim())
+    .limit(1);
+
+  if (prospects && prospects.length > 0) {
+    return res.json({ type: 'existing_prospect', data: prospects[0] });
+  }
+
+  return res.json({ type: 'not_found' });
+});
+
+// Sales per customer
+app.get('/api/erp/customers/:code/sales', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const { from, to } = req.query;
+  console.log('GET customer sales:', code, from, to);
+
+  const { data: customer, error: custError } = await supabase
+    .from('stg_soft1_trdr')
+    .select('trdr_id')
+    .eq('trdr_code', code)
+    .eq('company', 1000)
+    .single();
+
+  console.log('Customer lookup:', customer, custError);
+
+  if (!customer) return res.json([]);
+
+  const { data, error } = await supabase
+    .from('stg_soft1_sales')
+    .select('*')
+    .eq('customer_id', customer.trdr_id)
+    .gte('doc_date', from)
+    .lte('doc_date', to)
+    .order('doc_date', { ascending: false });
+
+  console.log('Sales result count:', data?.length, 'Error:', error);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data ?? []);
+});
+
 
 app.listen(3001, () => {
   console.log('Backend running on http://localhost:3001');

@@ -4,31 +4,91 @@ const router = express.Router();
 
 const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
-// Customers
+// Customers list
 router.get('/customers', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
+    const salesmanCode = isRep ? req.user.salesman_code : null;
+
+    let query = supabase
       .from('vw_crm_customers')
       .select('*')
+      .eq('is_active', true)
       .limit(5000);
 
-    if (error) {
-      console.error('Supabase error:', error);
-      return res.status(500).json({ error: 'Failed to load customers', details: error });
+    if (salesmanCode) {
+      query = query.eq('salesman_code', salesmanCode);
     }
 
-    const allCustomers = Array.isArray(data) ? data : [];
+    const { data, error } = await query;
+    if (error) {
+      console.error('Supabase error:', error);
+      return res.status(500).json({ error: error.message });
+    }
 
-    const filtered = FULL_ACCESS_ROLES.includes(req.user.role)
-      ? allCustomers
-      : allCustomers.filter(c => String(c.salesman_code) === String(req.user.salesman_code));
-
-    res.json({ items: filtered, total: filtered.length });
-
+    res.json({ items: data ?? [] });
   } catch (err) {
     console.error('Unexpected error:', err);
     res.status(500).json({ error: 'Unexpected server error' });
   }
+});
+
+// Customer sales
+router.get('/customers/:code/sales', async (req, res) => {
+  const { code } = req.params;
+  const { from, to } = req.query;
+
+  const { data: customer } = await supabase
+    .from('stg_soft1_trdr')
+    .select('trdr_id')
+    .eq('trdr_code', code)
+    .eq('company', 1000)
+    .single();
+
+  if (!customer) return res.json([]);
+
+  const INVOICE_SERIES = [7061, 7062, 7080, 7063, 7064, 9962];
+
+  let query = supabase
+    .from('stg_soft1_findoc')
+    .select('findoc, trndate, series')
+    .eq('trdr', String(customer.trdr_id))
+    .eq('company', 1000)
+    .in('series', INVOICE_SERIES)
+    .order('trndate', { ascending: false });
+
+  if (from) query = query.gte('trndate', from);
+  if (to) query = query.lte('trndate', to);
+
+  const { data: findocs, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  if (!findocs || findocs.length === 0) return res.json([]);
+
+  // Fetch netamnt for these findocs
+  const findocIds = findocs.map(f => f.findoc);
+  const { data: netamnts } = await supabase
+    .from('stg_soft1_findoc_netamnt')
+    .select('findoc, netamnt')
+    .in('findoc', findocIds)
+    .eq('company', 1000);
+
+  const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
+
+  // Group by month
+  const byMonth = {};
+  findocs.forEach((row) => {
+    const month = (row.trndate ?? '').slice(0, 7);
+    if (!month) return;
+    const amount = netamntMap.get(row.findoc) ?? 0;
+    const isCreditNote = [7063, 7064, 9962].includes(row.series);
+    byMonth[month] = (byMonth[month] ?? 0) + (isCreditNote ? -amount : amount);
+  });
+
+  const result = Object.entries(byMonth)
+    .map(([month, netamnt]) => ({ month, netamnt }))
+    .sort((a, b) => b.month.localeCompare(a.month));
+
+  res.json(result);
 });
 
 // Sales
