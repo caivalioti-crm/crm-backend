@@ -694,37 +694,76 @@ app.get('/api/vat-check/:vat', authMiddleware, async (req, res) => {
   return res.json({ type: 'not_found' });
 });
 
-// Sales per customer
-app.get('/api/erp/customers/:code/sales', authMiddleware, async (req, res) => {
+// Category intelligence per customer
+app.get('/api/customers/:code/categories', authMiddleware, async (req, res) => {
   const { code } = req.params;
-  const { from, to } = req.query;
-  console.log('GET customer sales:', code, from, to);
 
-  const { data: customer, error: custError } = await supabase
-    .from('stg_soft1_trdr')
-    .select('trdr_id')
-    .eq('trdr_code', code)
-    .eq('company', 1000)
-    .single();
+  const { data: visits } = await supabase
+    .from('crm_visits')
+    .select('id, visit_date')
+    .eq('customer_code', code);
 
-  console.log('Customer lookup:', customer, custError);
+  if (!visits || visits.length === 0) return res.json([]);
 
-  if (!customer) return res.json([]);
+  const visitIds = visits.map(v => v.id);
+  const visitDateMap = new Map(visits.map(v => [v.id, v.visit_date]));
 
-  const { data, error } = await supabase
-    .from('stg_soft1_sales')
-    .select('*')
-    .eq('customer_id', customer.trdr_id)
-    .gte('doc_date', from)
-    .lte('doc_date', to)
-    .order('doc_date', { ascending: false });
-
-  console.log('Sales result count:', data?.length, 'Error:', error);
+  const { data: categories, error } = await supabase
+    .from('crm_visit_categories')
+    .select('category_code, subcategory_code, visit_id')
+    .in('visit_id', visitIds);
 
   if (error) return res.status(500).json({ error: error.message });
-  res.json(data ?? []);
-});
+  if (!categories || categories.length === 0) return res.json([]);
 
+  // Fetch category names
+  const allCodes = [...new Set([
+    ...categories.map(c => c.category_code),
+    ...categories.map(c => c.subcategory_code).filter(Boolean),
+  ])];
+
+  const { data: masters } = await supabase
+    .from('crm_category_master')
+    .select('category_code, full_name, short_name, level, parent_code')
+    .in('category_code', allCodes);
+
+  const masterMap = new Map((masters ?? []).map(m => [m.category_code, m]));
+
+  // Group by category+subcategory, track last_discussed and count
+  const grouped = new Map();
+  categories.forEach(c => {
+    const key = `${c.category_code}__${c.subcategory_code ?? ''}`;
+    const visitDate = visitDateMap.get(c.visit_id);
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        category_code: c.category_code,
+        subcategory_code: c.subcategory_code ?? null,
+        last_discussed: visitDate,
+        times_discussed: 1,
+      });
+    } else {
+      const existing = grouped.get(key);
+      existing.times_discussed++;
+      if (visitDate > existing.last_discussed) {
+        existing.last_discussed = visitDate;
+      }
+    }
+  });
+
+  const result = Array.from(grouped.values()).map(item => {
+    const displayCode = item.subcategory_code ?? item.category_code;
+    const master = masterMap.get(displayCode) ?? masterMap.get(item.category_code);
+    return {
+      ...item,
+      full_name: master?.full_name ?? displayCode,
+      short_name: master?.short_name ?? displayCode,
+      level: master?.level ?? 1,
+      parent_code: master?.parent_code ?? null,
+    };
+  }).sort((a, b) => (b.last_discussed ?? '').localeCompare(a.last_discussed ?? ''));
+
+  res.json(result);
+});
 
 app.listen(3001, () => {
   console.log('Backend running on http://localhost:3001');

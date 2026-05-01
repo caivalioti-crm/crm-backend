@@ -33,7 +33,50 @@ router.get('/customers', async (req, res) => {
   }
 });
 
-// Customer sales
+// Helper: fetch findocs + netamnt for a customer
+async function fetchCustomerFindocs(trdrId, series, from, to) {
+  let query = supabase
+    .from('stg_soft1_findoc')
+    .select('findoc, trndate, series, seriesnum')
+    .eq('trdr', String(trdrId))
+    .eq('company', 1000)
+    .in('series', series)
+    .order('trndate', { ascending: false });
+
+  if (from) query = query.gte('trndate', from);
+  if (to) query = query.lte('trndate', to);
+
+  const { data: findocs, error } = await query;
+  if (error || !findocs || findocs.length === 0) return { findocs: [], netamntMap: new Map() };
+
+  const findocIds = findocs.map(f => f.findoc);
+  const { data: netamnts } = await supabase
+    .from('stg_soft1_findoc_netamnt')
+    .select('findoc, netamnt')
+    .in('findoc', findocIds)
+    .eq('company', 1000);
+
+  const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
+  return { findocs, netamntMap };
+}
+
+const SERIES_NAMES = {
+  7062: 'ΤΔΑ', 7061: 'ΤΠΑ', 7080: 'ΤΔΑ',
+  7063: 'ΠΙΣ', 7064: 'ΠΙΣ', 9962: 'ΑΚΥ',
+  7021: 'ΠΑΡ', 7025: 'ΠΡΟ', 7026: 'ΔΕΛ', 7027: 'ΠΑΡ',
+};
+
+const SERIES_TYPE = {
+  7021: 'order', 7025: 'order', 7026: 'order', 7027: 'order',
+  7061: 'invoice', 7062: 'invoice', 7080: 'invoice',
+  7063: 'credit', 7064: 'credit', 9962: 'credit',
+};
+
+const CREDIT_SERIES = [7063, 7064, 9962];
+const INVOICE_SERIES = [7061, 7062, 7080, 7063, 7064, 9962];
+const ALL_SERIES = [7021, 7025, 7026, 7027, 7061, 7062, 7080, 7063, 7064, 9962];
+
+// Customer sales — monthly grouped (for Sales Overview chart)
 router.get('/customers/:code/sales', async (req, res) => {
   const { code } = req.params;
   const { from, to } = req.query;
@@ -47,40 +90,15 @@ router.get('/customers/:code/sales', async (req, res) => {
 
   if (!customer) return res.json([]);
 
-  const INVOICE_SERIES = [7061, 7062, 7080, 7063, 7064, 9962];
+  const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, INVOICE_SERIES, from, to);
+  if (!findocs.length) return res.json([]);
 
-  let query = supabase
-    .from('stg_soft1_findoc')
-    .select('findoc, trndate, series')
-    .eq('trdr', String(customer.trdr_id))
-    .eq('company', 1000)
-    .in('series', INVOICE_SERIES)
-    .order('trndate', { ascending: false });
-
-  if (from) query = query.gte('trndate', from);
-  if (to) query = query.lte('trndate', to);
-
-  const { data: findocs, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
-  if (!findocs || findocs.length === 0) return res.json([]);
-
-  // Fetch netamnt for these findocs
-  const findocIds = findocs.map(f => f.findoc);
-  const { data: netamnts } = await supabase
-    .from('stg_soft1_findoc_netamnt')
-    .select('findoc, netamnt')
-    .in('findoc', findocIds)
-    .eq('company', 1000);
-
-  const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
-
-  // Group by month
   const byMonth = {};
-  findocs.forEach((row) => {
+  findocs.forEach(row => {
     const month = (row.trndate ?? '').slice(0, 7);
     if (!month) return;
     const amount = netamntMap.get(row.findoc) ?? 0;
-    const isCreditNote = [7063, 7064, 9962].includes(row.series);
+    const isCreditNote = CREDIT_SERIES.includes(row.series);
     byMonth[month] = (byMonth[month] ?? 0) + (isCreditNote ? -amount : amount);
   });
 
@@ -91,7 +109,45 @@ router.get('/customers/:code/sales', async (req, res) => {
   res.json(result);
 });
 
-// Sales
+// Customer documents — individual records with doc numbers (for Orders & Invoices section)
+router.get('/customers/:code/documents', async (req, res) => {
+  const { code } = req.params;
+  const { from, to } = req.query;
+
+  const { data: customer } = await supabase
+    .from('stg_soft1_trdr')
+    .select('trdr_id')
+    .eq('trdr_code', code)
+    .eq('company', 1000)
+    .single();
+
+  if (!customer) return res.json([]);
+
+  const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, ALL_SERIES, from, to);
+  if (!findocs.length) return res.json([]);
+
+  const result = findocs.map(row => {
+    const year = (row.trndate ?? '').slice(0, 4);
+    const seriesName = SERIES_NAMES[row.series] ?? String(row.series);
+    const docNum = `${seriesName}-${year}-${String(row.seriesnum).padStart(4, '0')}`;
+    const netamnt = netamntMap.get(row.findoc) ?? 0;
+    const type = SERIES_TYPE[row.series] ?? 'other';
+    const isCreditNote = CREDIT_SERIES.includes(row.series);
+
+    return {
+      findoc: row.findoc,
+      doc_number: docNum,
+      trndate: (row.trndate ?? '').slice(0, 10),
+      series: row.series,
+      type,
+      netamnt: isCreditNote ? -netamnt : netamnt,
+    };
+  });
+
+  res.json(result);
+});
+
+// Sales summary (dashboard)
 router.get('/sales', async (req, res) => {
   try {
     const { from, to } = req.query;
@@ -127,12 +183,10 @@ router.get('/sales', async (req, res) => {
 router.get('/categories/purchased', async (req, res) => {
   try {
     const { data, error } = await supabase.rpc('select_vw_crm_categories_purchased');
-
     if (error) {
       console.error(error);
       return res.status(500).json({ error: 'Failed to load categories' });
     }
-
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: 'Unexpected server error' });
