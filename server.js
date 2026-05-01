@@ -285,7 +285,11 @@ app.patch('/api/visits/comments/:commentId/read', authMiddleware, async (req, re
 
   const { error } = await supabase
     .from('crm_visit_comments')
-    .update({ is_read: true })
+    .update({
+      is_read: true,
+      read_at: new Date().toISOString(),
+      read_by_name: req.user.full_name,
+    })
     .eq('id', commentId);
 
   if (error) return res.status(500).json({ error: error.message });
@@ -348,6 +352,39 @@ const { data: fullVisit, error: fetchError } = await supabase
 
   if (fetchError) return res.status(500).json({ error: fetchError.message });
   res.json(fullVisit);
+});
+
+// Delete own comment (manager/admin only)
+app.delete('/api/visits/comments/:commentId', authMiddleware, async (req, res) => {
+  const { commentId } = req.params;
+
+  const { error } = await supabase
+    .from('crm_visit_comments')
+    .delete()
+    .eq('id', commentId)
+    .eq('user_id', req.user.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// Rep replies to a comment
+app.patch('/api/visits/comments/:commentId/reply', authMiddleware, async (req, res) => {
+  const { commentId } = req.params;
+  const { reply_text } = req.body;
+
+  if (!reply_text?.trim()) return res.status(400).json({ error: 'Reply is required' });
+
+  const { error } = await supabase
+    .from('crm_visit_comments')
+    .update({
+      reply_text: reply_text.trim(),
+      reply_at: new Date().toISOString(),
+    })
+    .eq('id', commentId);
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
 });
 
 app.listen(3001, () => {
