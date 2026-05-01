@@ -11,7 +11,6 @@ function convertDateToISO(ddmmyy) {
   const year = Number(shortYear) < 50
     ? `20${shortYear}`
     : `19${shortYear}`;
-
   return `${year}-${month}-${day}`;
 }
 
@@ -37,11 +36,7 @@ app.get('/db-test', authMiddleware, async (req, res) => {
     .from('category_discussion_history')
     .select('*')
     .limit(1);
-
-  if (error) {
-    return res.status(500).json({ error: error.message });
-  }
-
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true, data });
 });
 
@@ -50,22 +45,13 @@ app.get('/', (req, res) => {
 });
 
 app.post('/visits/record', authMiddleware, async (req, res) => {
-  if (!req.body) {
-    return res.status(400).json({ error: 'Missing request body' });
-  }
+  if (!req.body) return res.status(400).json({ error: 'Missing request body' });
 
-  const {
-    entityType,
-    entityId,
-    visitDate,
-    categories
-  } = req.body;
-
+  const { entityType, entityId, visitDate, categories } = req.body;
   const isoVisitDate = convertDateToISO(visitDate);
 
   for (const category of categories) {
     const { categoryCode, subcategoryCodes } = category;
-
     if (!subcategoryCodes || subcategoryCodes.length === 0) {
       const { error } = await supabase.rpc('upsert_category_discussion', {
         p_entity_type: entityType,
@@ -74,11 +60,7 @@ app.post('/visits/record', authMiddleware, async (req, res) => {
         p_subcategory_code: null,
         p_visit_date: isoVisitDate
       });
-
-      if (error) {
-        return res.status(500).json({ error: error.message });
-      }
-
+      if (error) return res.status(500).json({ error: error.message });
     } else {
       for (const subCode of subcategoryCodes) {
         const { error } = await supabase.rpc('upsert_category_discussion', {
@@ -88,87 +70,63 @@ app.post('/visits/record', authMiddleware, async (req, res) => {
           p_subcategory_code: subCode,
           p_visit_date: isoVisitDate
         });
-
-        if (error) {
-          return res.status(500).json({ error: error.message });
-        }
+        if (error) return res.status(500).json({ error: error.message });
       }
     }
   }
-
   res.json({ success: true });
 });
 
 app.get('/customers/:customerCode/readiness', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
-
   const { data, error } = await supabase
     .from('customer_readiness_score')
     .select('*')
     .eq('customer_code', customerCode);
-
-  if (error) {
-    return res.status(500).json({ error: error.message });
-  }
-
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true, data: data[0] ?? null });
 });
 
 app.get('/customers/:customerCode/dashboard', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
-
   const { data, error } = await supabase
     .from('customer_crm_kpis')
     .select('*')
     .eq('customer_code', customerCode)
     .single();
-
-  if (error) {
-    return res.status(500).json({ error: error.message });
-  }
-
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true, data });
 });
 
 app.get('/customers/:customerCode/top-categories', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
-
   const { data, error } = await supabase
     .from('customer_top_3_categories')
     .select('*')
     .eq('customer_code', customerCode);
-
-  if (error) {
-    return res.status(500).json({ error: error.message });
-  }
-
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true, data });
 });
 
 app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (req, res) => {
   const { customerCode } = req.params;
-
   const { data, error } = await supabase
     .from('customer_neglected_categories')
     .select('*')
     .eq('customer_code', customerCode);
-
-  if (error) {
-    return res.status(500).json({ error: error.message });
-  }
-
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true, data });
 });
 
-// Create a new visit
+// ─── VISITS ────────────────────────────────────────────────────────────────
+
 app.post('/api/visits', authMiddleware, async (req, res) => {
-  const { customer_code, visit_date, visit_time, visit_type, notes, tasks } = req.body;
+  const { customer_code, visit_date, visit_time, visit_type, notes, tasks, categories } = req.body;
 
   if (!customer_code || !visit_date) {
     return res.status(400).json({ error: 'customer_code and visit_date are required' });
   }
 
-  // Insert visit
   const { data: visit, error: visitError } = await supabase
     .from('crm_visits')
     .insert({
@@ -188,7 +146,6 @@ app.post('/api/visits', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: visitError.message });
   }
 
-  // Insert tasks if any
   if (tasks && tasks.length > 0) {
     const taskRows = tasks.map(t => ({
       visit_id: visit.id,
@@ -196,21 +153,33 @@ app.post('/api/visits', authMiddleware, async (req, res) => {
       reminder_date: t.reminderDate || null,
       status: 'not-started',
     }));
+    const { error: taskError } = await supabase.from('crm_visit_tasks').insert(taskRows);
+    if (taskError) return res.status(500).json({ error: taskError.message });
+  }
 
-    const { error: taskError } = await supabase
-      .from('crm_visit_tasks')
-      .insert(taskRows);
+  if (categories && categories.length > 0) {
+    const categoryRows = categories.map(c => ({
+      visit_id: visit.id,
+      category_code: c.categoryCode,
+      subcategory_code: c.subcategoryCode || null,
+    }));
+    const { error: catError } = await supabase.from('crm_visit_categories').insert(categoryRows);
+    if (catError) return res.status(500).json({ error: catError.message });
 
-    if (taskError) {
-      console.error('Task insert error:', taskError);
-      return res.status(500).json({ error: taskError.message });
+    for (const cat of categories) {
+      await supabase.rpc('upsert_category_discussion', {
+        p_entity_type: 'customer',
+        p_entity_id: customer_code,
+        p_category_code: cat.categoryCode,
+        p_subcategory_code: cat.subcategoryCode || null,
+        p_visit_date: visit_date,
+      });
     }
   }
 
   res.json({ success: true, visit });
 });
 
-// Get visits for current user
 app.get('/api/visits', authMiddleware, async (req, res) => {
   const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
@@ -230,38 +199,44 @@ app.get('/api/visits', authMiddleware, async (req, res) => {
   }
 
   const { data, error } = await query;
-
   if (error) {
     console.error('Visits fetch error:', error);
     return res.status(500).json({ error: error.message });
   }
 
-  res.json(data);
+  // Fetch user profiles to get full names
+  const { data: profiles } = await supabase
+    .from('crm_user_profiles')
+    .select('id, full_name');
+
+  const profileMap = new Map((profiles ?? []).map(p => [p.id, p.full_name]));
+
+  const visitsWithNames = data.map(v => ({
+    ...v,
+    owner_name: profileMap.get(v.user_id) ?? v.salesman_code ?? 'Unknown',
+  }));
+
+  res.json(visitsWithNames);
 });
 
-// Get category master
 app.get('/api/categories', authMiddleware, async (req, res) => {
   const { data, error } = await supabase
     .from('crm_category_master')
     .select('category_code, parent_code, level, full_name, short_name')
     .order('category_code');
-
   if (error) {
     console.error('Categories fetch error:', error);
     return res.status(500).json({ error: error.message });
   }
-
   res.json(data);
 });
 
-// Add comment to a visit
+// ─── COMMENTS ──────────────────────────────────────────────────────────────
+
 app.post('/api/visits/:id/comments', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { comment } = req.body;
-
-  if (!comment?.trim()) {
-    return res.status(400).json({ error: 'Comment is required' });
-  }
+  if (!comment?.trim()) return res.status(400).json({ error: 'Comment is required' });
 
   const { data, error } = await supabase
     .from('crm_visit_comments')
@@ -279,10 +254,8 @@ app.post('/api/visits/:id/comments', authMiddleware, async (req, res) => {
   res.json(data);
 });
 
-// Mark comment as read
 app.patch('/api/visits/comments/:commentId/read', authMiddleware, async (req, res) => {
   const { commentId } = req.params;
-
   const { error } = await supabase
     .from('crm_visit_comments')
     .update({
@@ -291,28 +264,65 @@ app.patch('/api/visits/comments/:commentId/read', authMiddleware, async (req, re
       read_by_name: req.user.full_name,
     })
     .eq('id', commentId);
-
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
 
-// Delete a visit (own visits for reps, any for managers/admins)
+app.patch('/api/visits/comments/:commentId/reply', authMiddleware, async (req, res) => {
+  const { commentId } = req.params;
+  const { reply_text } = req.body;
+  if (!reply_text?.trim()) return res.status(400).json({ error: 'Reply is required' });
+  const { error } = await supabase
+    .from('crm_visit_comments')
+    .update({
+      reply_text: reply_text.trim(),
+      reply_at: new Date().toISOString(),
+    })
+    .eq('id', commentId);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// Edit own comment (manager/admin only)
+app.patch('/api/visits/comments/:commentId', authMiddleware, async (req, res) => {
+  const { commentId } = req.params;
+  const { comment } = req.body;
+  if (!comment?.trim()) return res.status(400).json({ error: 'Comment is required' });
+  const { error } = await supabase
+    .from('crm_visit_comments')
+    .update({ comment: comment.trim() })
+    .eq('id', commentId)
+    .eq('user_id', req.user.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.delete('/api/visits/comments/:commentId', authMiddleware, async (req, res) => {
+  const { commentId } = req.params;
+  const { error } = await supabase
+    .from('crm_visit_comments')
+    .delete()
+    .eq('id', commentId)
+    .eq('user_id', req.user.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+// ─── VISIT EDIT / DELETE ───────────────────────────────────────────────────
+
 app.delete('/api/visits/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
   let query = supabase.from('crm_visits').delete().eq('id', id);
-
   if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
     query = query.eq('user_id', req.user.id);
   }
-
   const { error } = await query;
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
 
-// Edit a visit (own visits for reps, any for managers/admins)
 app.patch('/api/visits/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const { notes, visit_type, visit_date, visit_time, categories } = req.body;
@@ -327,10 +337,9 @@ app.patch('/api/visits/:id', authMiddleware, async (req, res) => {
     query = query.eq('user_id', req.user.id);
   }
 
-const { data, error } = await query.select().single();
+  const { error } = await query;
   if (error) return res.status(500).json({ error: error.message });
 
-  // Update categories if provided
   if (categories !== undefined) {
     await supabase.from('crm_visit_categories').delete().eq('visit_id', id);
     if (categories.length > 0) {
@@ -344,47 +353,25 @@ const { data, error } = await query.select().single();
     }
   }
 
-const { data: fullVisit, error: fetchError } = await supabase
+  // Return full visit with nested data + owner name
+  const { data: fullVisit, error: fetchError } = await supabase
     .from('crm_visits')
     .select(`*, crm_visit_tasks(*), crm_visit_categories(*), crm_visit_comments(*)`)
     .eq('id', id)
     .single();
 
   if (fetchError) return res.status(500).json({ error: fetchError.message });
-  res.json(fullVisit);
-});
 
-// Delete own comment (manager/admin only)
-app.delete('/api/visits/comments/:commentId', authMiddleware, async (req, res) => {
-  const { commentId } = req.params;
+  const { data: profiles } = await supabase
+    .from('crm_user_profiles')
+    .select('id, full_name');
 
-  const { error } = await supabase
-    .from('crm_visit_comments')
-    .delete()
-    .eq('id', commentId)
-    .eq('user_id', req.user.id);
+  const profileMap = new Map((profiles ?? []).map(p => [p.id, p.full_name]));
 
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ success: true });
-});
-
-// Rep replies to a comment
-app.patch('/api/visits/comments/:commentId/reply', authMiddleware, async (req, res) => {
-  const { commentId } = req.params;
-  const { reply_text } = req.body;
-
-  if (!reply_text?.trim()) return res.status(400).json({ error: 'Reply is required' });
-
-  const { error } = await supabase
-    .from('crm_visit_comments')
-    .update({
-      reply_text: reply_text.trim(),
-      reply_at: new Date().toISOString(),
-    })
-    .eq('id', commentId);
-
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ success: true });
+  res.json({
+    ...fullVisit,
+    owner_name: profileMap.get(fullVisit.user_id) ?? fullVisit.salesman_code ?? 'Unknown',
+  });
 });
 
 app.listen(3001, () => {

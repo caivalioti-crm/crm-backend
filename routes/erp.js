@@ -35,10 +35,13 @@ router.get('/customers', async (req, res) => {
 router.get('/sales', async (req, res) => {
   try {
     const { from, to } = req.query;
+    const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
+    const salesmanCode = isRep ? req.user.salesman_code : null;
 
     const { data, error } = await supabase.rpc('get_sales_summary', {
       p_from: from || '2022-01-01',
-      p_to: to || new Date().toISOString().split('T')[0]
+      p_to: to || new Date().toISOString().split('T')[0],
+      p_salesman_code: salesmanCode,
     });
 
     if (error) {
@@ -52,24 +55,7 @@ router.get('/sales', async (req, res) => {
       invoiceCount: Number(row.invoice_count ?? 0),
     }));
 
-    if (FULL_ACCESS_ROLES.includes(req.user.role)) {
-      return res.json(mapped);
-    }
-
-    // Rep filtering — use direct view query with limit
-    const { data: customers, error: custError } = await supabase
-      .from('vw_crm_customers')
-      .select('salesman_code, trdr_id')
-      .limit(5000);
-
-    if (custError) return res.status(500).json({ error: 'Failed to filter sales' });
-
-    const repCustomerCodes = customers
-      .filter(c => String(c.salesman_code) === String(req.user.salesman_code))
-      .map(c => String(c.trdr_id));
-
-    const filteredSales = mapped.filter(s => repCustomerCodes.includes(s.customerCode));
-    res.json(filteredSales);
+    res.json(mapped);
 
   } catch (err) {
     console.error('Unexpected error:', err);
@@ -96,23 +82,26 @@ router.get('/categories/purchased', async (req, res) => {
 // Sales by area
 router.get('/sales/by-area', async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const { from, to, compareFrom, compareTo } = req.query;
+    const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
+    const salesmanCode = isRep ? req.user.salesman_code : null;
 
     const [current, compare] = await Promise.all([
       supabase.rpc('get_sales_by_area', {
         p_from: from || '2022-01-01',
-        p_to: to || new Date().toISOString().split('T')[0]
+        p_to: to || new Date().toISOString().split('T')[0],
+        p_salesman_code: salesmanCode,
       }),
       supabase.rpc('get_sales_by_area', {
-        p_from: req.query.compareFrom || '2022-01-01',
-        p_to: req.query.compareTo || new Date().toISOString().split('T')[0]
+        p_from: compareFrom || '2022-01-01',
+        p_to: compareTo || new Date().toISOString().split('T')[0],
+        p_salesman_code: salesmanCode,
       })
     ]);
 
     if (current.error) return res.status(500).json({ error: current.error.message });
     if (compare.error) return res.status(500).json({ error: compare.error.message });
 
-    // Merge current + compare
     const compareMap = new Map(
       (compare.data || []).map(r => [r.area, Number(r.total_netamnt)])
     );
@@ -143,17 +132,21 @@ router.get('/sales/by-area', async (req, res) => {
 router.get('/sales/by-city', async (req, res) => {
   try {
     const { from, to, compareFrom, compareTo, area } = req.query;
+    const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
+    const salesmanCode = isRep ? req.user.salesman_code : null;
 
     const [current, compare] = await Promise.all([
       supabase.rpc('get_sales_by_city', {
         p_from: from || '2022-01-01',
         p_to: to || new Date().toISOString().split('T')[0],
-        p_area: area || null
+        p_area: area || null,
+        p_salesman_code: salesmanCode,
       }),
       supabase.rpc('get_sales_by_city', {
         p_from: compareFrom || '2022-01-01',
         p_to: compareTo || new Date().toISOString().split('T')[0],
-        p_area: area || null
+        p_area: area || null,
+        p_salesman_code: salesmanCode,
       })
     ]);
 
