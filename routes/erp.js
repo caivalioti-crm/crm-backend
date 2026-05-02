@@ -294,4 +294,52 @@ router.get('/sales/by-city', async (req, res) => {
   }
 });
 
+// GET /api/erp/customers/:code/sales-by-category
+router.get('/customers/:code/sales-by-category', async (req, res) => {
+  try {
+    const { code } = req.params;
+    const { from, to } = req.query;
+
+    let query = supabase
+      .from('mv_crm_sales_by_category')
+      .select('*')
+      .eq('customer_code', code)
+      .order('net_revenue', { ascending: false });
+
+    if (from) query = query.gte('last_invoice_date', from);
+    if (to)   query = query.lte('last_invoice_date', to);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    // Group by L1 parent for frontend consumption
+    const l1Map = new Map();
+    for (const row of data) {
+      const l1Code = row.parent_code?.split('.')[0] ?? row.category_code?.split('.')[0];
+      if (!l1Map.has(l1Code)) {
+        l1Map.set(l1Code, {
+          l1_code: l1Code,
+          categories: [],
+          total_revenue: 0,
+          total_qty: 0,
+          invoice_count: 0,
+        });
+      }
+      const group = l1Map.get(l1Code);
+      group.categories.push(row);
+      group.total_revenue += parseFloat(row.net_revenue ?? 0);
+      group.total_qty     += parseFloat(row.total_qty ?? 0);
+      group.invoice_count += parseInt(row.invoice_count ?? 0);
+    }
+
+    const grouped = Array.from(l1Map.values())
+      .sort((a, b) => b.total_revenue - a.total_revenue);
+
+    res.json({ flat: data, grouped });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
