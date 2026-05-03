@@ -109,6 +109,7 @@ router.get('/customers/:code/sales', async (req, res) => {
 
 // Customer documents
 router.get('/customers/:code/documents', async (req, res) => {
+  
   const { code } = req.params;
   const { from, to } = req.query;
 
@@ -122,6 +123,7 @@ router.get('/customers/:code/documents', async (req, res) => {
   if (!customer) return res.json([]);
 
   const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, ALL_SERIES, from, to);
+  console.log('doc series sample:', findocs.slice(0, 3).map(f => ({ series: f.series, type: typeof f.series })));
   if (!findocs.length) return res.json([]);
 
   const result = findocs.map(row => {
@@ -131,6 +133,7 @@ router.get('/customers/:code/documents', async (req, res) => {
     const netamnt = netamntMap.get(row.findoc) ?? 0;
     const type = SERIES_TYPE[row.series] ?? 'other';
     const isCreditNote = CREDIT_SERIES.includes(row.series);
+    if (type === 'other') console.log('unmapped series:', row.series, typeof row.series);
     return {
       findoc: row.findoc,
       doc_number: docNum,
