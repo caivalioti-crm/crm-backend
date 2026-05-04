@@ -15,11 +15,16 @@ function convertDateToISO(ddmmyy) {
 }
 
 const app = express();
+
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: [
+    'http://localhost:5173',
+    'https://crm.eaivaliotis.gr'
+  ],
   methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+
 app.use(express.json());
 app.use('/api/erp', authMiddleware, erpRoutes);
 
@@ -444,7 +449,7 @@ app.get('/api/prospects', authMiddleware, async (req, res) => {
 
 // Create prospect
 app.post('/api/prospects', authMiddleware, async (req, res) => {
-  console.log('POST /api/prospects body:', JSON.stringify(req.body, null, 2));
+  
   const {
     business_name, owner_name, phone, mobile, email,
     address, city, area, vat_number, notes, status,
@@ -453,7 +458,7 @@ app.post('/api/prospects', authMiddleware, async (req, res) => {
 
   if (!business_name?.trim()) return res.status(400).json({ error: 'Business name is required' });
 
-  console.log('Inserting prospect...');
+  
   const { data: prospect, error } = await supabase
     .from('crm_prospects')
     .insert({
@@ -472,11 +477,8 @@ app.post('/api/prospects', authMiddleware, async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 
-  console.log('Prospect inserted:', prospect.id);
-
   // Save competitor info
   if (competitor_info) {
-    console.log('Inserting competitor info...');
     const { error: compError } = await supabase.from('crm_entity_competitor_info').insert({
       entity_type: 'prospect',
       entity_id: prospect.id,
@@ -487,7 +489,7 @@ app.post('/api/prospects', authMiddleware, async (req, res) => {
 
   // Save shop profile
   if (shop_profile) {
-    console.log('Inserting shop profile...');
+    
     const { error: shopError } = await supabase.from('crm_entity_shop_profile').insert({
       entity_type: 'prospect',
       entity_id: prospect.id,
@@ -496,7 +498,6 @@ app.post('/api/prospects', authMiddleware, async (req, res) => {
     if (shopError) console.error('Shop profile error:', shopError);
   }
 
-  console.log('Done!');
   res.json(prospect);
 });
 
@@ -765,6 +766,4 @@ app.get('/api/customers/:code/categories', authMiddleware, async (req, res) => {
   res.json(result);
 });
 
-app.listen(3001, () => {
-  console.log('Backend running on http://localhost:3001');
-});
+app.listen(process.env.PORT || 3001);
