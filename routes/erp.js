@@ -35,7 +35,7 @@ router.get('/customers', async (req, res) => {
 async function fetchCustomerFindocs(trdrId, series, from, to) {
   let query = supabase
     .from('stg_soft1_findoc')
-    .select('findoc, trndate, series, seriesnum')
+    .select('findoc, trndate, series, seriesnum, fincode')
     .eq('trdr', String(trdrId))
     .eq('company', 1000)
     .in('series', series)
@@ -58,6 +58,25 @@ async function fetchCustomerFindocs(trdrId, series, from, to) {
   return { findocs, netamntMap };
 }
 
+// Helper: map findoc rows to document objects
+function mapDoc(row, netamntMap) {
+  const year = (row.trndate ?? '').slice(0, 4);
+  const seriesName = SERIES_NAMES[row.series] ?? String(row.series);
+  const fallbackNum = `${seriesName}-${year}-${String(row.seriesnum).padStart(4, '0')}`;
+  const docNum = row.fincode || fallbackNum;
+  const netamnt = netamntMap.get(row.findoc) ?? 0;
+  const type = SERIES_TYPE[row.series] ?? 'other';
+  const isCreditNote = CREDIT_SERIES.includes(row.series);
+  return {
+    findoc: row.findoc,
+    doc_number: docNum,
+    trndate: (row.trndate ?? '').slice(0, 10),
+    series: row.series,
+    type,
+    netamnt: isCreditNote ? -netamnt : netamnt,
+  };
+}
+
 const SERIES_NAMES = {
   7062: 'ΤΔΑ', 7061: 'ΤΠΑ', 7080: 'ΤΔΑ',
   7063: 'ΠΙΣ', 7064: 'ΠΙΣ', 9962: 'ΑΚΥ',
@@ -72,6 +91,7 @@ const SERIES_TYPE = {
 
 const CREDIT_SERIES  = [7063, 7064, 9962];
 const INVOICE_SERIES = [7061, 7062, 7080, 7063, 7064, 9962];
+const ORDER_SERIES   = [7021, 7025, 7026, 7027];
 const ALL_SERIES     = [7021, 7025, 7026, 7027, 7061, 7062, 7080, 7063, 7064, 9962];
 
 // Customer sales — monthly grouped
@@ -107,9 +127,8 @@ router.get('/customers/:code/sales', async (req, res) => {
   res.json(result);
 });
 
-// Customer documents
+// Customer documents — last 5 per type, using fincode where available
 router.get('/customers/:code/documents', async (req, res) => {
-  
   const { code } = req.params;
   const { from, to } = req.query;
 
@@ -122,29 +141,55 @@ router.get('/customers/:code/documents', async (req, res) => {
 
   if (!customer) return res.json([]);
 
-  const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, ALL_SERIES, from, to);
-  console.log('doc series sample:', findocs.slice(0, 3).map(f => ({ series: f.series, type: typeof f.series })));
-  if (!findocs.length) return res.json([]);
+  // Fetch top 5 of each type in parallel
+  const [invoiceResult, orderResult, creditResult] = await Promise.all([
+    fetchCustomerFindocs(customer.trdr_id, [7061, 7062, 7080], from, to),
+    fetchCustomerFindocs(customer.trdr_id, ORDER_SERIES, from, to),
+    fetchCustomerFindocs(customer.trdr_id, CREDIT_SERIES, from, to),
+  ]);
 
-  const result = findocs.map(row => {
-    const year = (row.trndate ?? '').slice(0, 4);
-    const seriesName = SERIES_NAMES[row.series] ?? String(row.series);
-    const docNum = `${seriesName}-${year}-${String(row.seriesnum).padStart(4, '0')}`;
-    const netamnt = netamntMap.get(row.findoc) ?? 0;
-    const type = SERIES_TYPE[row.series] ?? 'other';
-    const isCreditNote = CREDIT_SERIES.includes(row.series);
-    if (type === 'other') console.log('unmapped series:', row.series, typeof row.series);
-    return {
-      findoc: row.findoc,
-      doc_number: docNum,
-      trndate: (row.trndate ?? '').slice(0, 10),
-      series: row.series,
-      type,
-      netamnt: isCreditNote ? -netamnt : netamnt,
-    };
-  });
+  const invoiceDocs = invoiceResult.findocs.slice(0, 5).map(r => mapDoc(r, invoiceResult.netamntMap));
+  const orderDocs   = orderResult.findocs.slice(0, 5).map(r => mapDoc(r, orderResult.netamntMap));
+  const creditDocs  = creditResult.findocs.slice(0, 5).map(r => mapDoc(r, creditResult.netamntMap));
+
+  const result = [...invoiceDocs, ...orderDocs, ...creditDocs]
+    .sort((a, b) => b.trndate.localeCompare(a.trndate));
 
   res.json(result);
+});
+
+// Customer balance
+router.get('/customers/:code/balance', async (req, res) => {
+  try {
+    const { code } = req.params;
+
+    const { data: balData, error: balError } = await supabase
+      .from('stg_soft1_custbalance')
+      .select('debit, credit')
+      .eq('cuscode', parseInt(code));
+
+    if (balError) throw balError;
+
+    const balance = Math.round(
+      (balData ?? []).reduce((sum, row) =>
+        sum + Number(row.debit ?? 0) - Number(row.credit ?? 0), 0
+      ) * 100
+    ) / 100;
+
+    const { data: entries, error: entError } = await supabase
+      .from('stg_soft1_custbalance')
+      .select('trndate, fincode, seira, debit, credit')
+      .eq('cuscode', parseInt(code))
+      .order('trndate', { ascending: false })
+      .limit(10);
+
+    if (entError) throw entError;
+
+    res.json({ balance, entries: entries ?? [] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Sales summary (dashboard)
@@ -273,15 +318,10 @@ router.get('/sales/by-city', async (req, res) => {
 });
 
 // ─── Helper: build proper L1 → L2 → L3 hierarchy ────────────────────────────
-// Rows from get_category_sales have level 1, 2, or 3.
-// L1 rows have near-zero revenue (direct sales only) — we ignore them and compute L1 totals from children.
-// L3 rows whose L2 parent has no row of its own are grouped under a synthetic L2.
 function buildHierarchy(rows) {
-  // Separate by level, skip L1 rows (computed from children)
   const l2Rows = rows.filter(r => r.level === 2);
   const l3Rows = rows.filter(r => r.level === 3);
 
-  // Build L2 map: category_code → enriched row
   const l2Map = new Map();
   for (const row of l2Rows) {
     const cur  = parseFloat(row.net_revenue ?? 0);
@@ -298,9 +338,8 @@ function buildHierarchy(rows) {
     });
   }
 
-  // Attach L3 rows to their L2 parent; create synthetic L2 if missing
   for (const row of l3Rows) {
-    const l2Code = row.parent_code; // e.g. "60.61"
+    const l2Code = row.parent_code;
     const cur    = parseFloat(row.net_revenue ?? 0);
     const prev   = parseFloat(row.prev_revenue ?? 0);
     const enriched = {
@@ -314,7 +353,6 @@ function buildHierarchy(rows) {
     };
 
     if (!l2Map.has(l2Code)) {
-      // Synthetic L2 — name will be resolved on frontend via categoryMaster
       l2Map.set(l2Code, {
         category_code: l2Code,
         parent_code:   l2Code.split('.')[0],
@@ -334,7 +372,6 @@ function buildHierarchy(rows) {
     l2Map.get(l2Code).l3s.push(enriched);
   }
 
-  // For synthetic L2s, roll up revenue from L3 children
   for (const l2 of l2Map.values()) {
     if (l2.l3s.length > 0 && l2.net_revenue === 0 && l2.category_id === null) {
       l2.net_revenue   = l2.l3s.reduce((s, r) => s + r.net_revenue, 0);
@@ -344,11 +381,9 @@ function buildHierarchy(rows) {
       l2.invoice_count = l2.l3s.reduce((s, r) => s + r.invoice_count, 0);
       l2.growth_pct    = l2.prev_revenue > 0 ? ((l2.net_revenue - l2.prev_revenue) / l2.prev_revenue) * 100 : null;
     }
-    // Sort L3s by revenue desc
     l2.l3s.sort((a, b) => b.net_revenue - a.net_revenue);
   }
 
-  // Group L2s under L1
   const l1Map = new Map();
   for (const l2 of l2Map.values()) {
     const l1Code = l2.parent_code?.split('.')[0] ?? l2.category_code.split('.')[0];
@@ -373,7 +408,6 @@ function buildHierarchy(rows) {
     group.invoice_count += l2.invoice_count;
   }
 
-  // Compute L1 growth and sort
   for (const group of l1Map.values()) {
     group.growth_pct = group.prev_revenue > 0
       ? ((group.total_revenue - group.prev_revenue) / group.prev_revenue) * 100
@@ -568,6 +602,43 @@ router.get('/customer-category-rank', async (req, res) => {
 
     if (error) throw error;
     res.json(data?.[0] ?? null);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/erp/customers/:code/documents/:findoc/lines
+router.get('/customers/:code/documents/:findoc/lines', async (req, res) => {
+  try {
+    const { findoc } = req.params;
+
+    const { data: lines, error } = await supabase
+      .from('stg_soft1_mtrlines')
+      .select('mtrl, qty, netlineval')
+      .eq('findoc', parseInt(findoc))
+      .eq('company', 1000);
+
+    if (error) throw error;
+    if (!lines || lines.length === 0) return res.json([]);
+
+    const mtrlIds = lines.map(l => l.mtrl);
+    const { data: mtrls } = await supabase
+      .from('stg_soft1_mtrl')
+      .select('mtrl, code, name')
+      .in('mtrl', mtrlIds);
+
+    const mtrlMap = new Map((mtrls ?? []).map(m => [m.mtrl, m]));
+
+    const result = lines.map(row => ({
+      mtrl: row.mtrl,
+      sku_code: mtrlMap.get(row.mtrl)?.code ?? '',
+      sku_name: mtrlMap.get(row.mtrl)?.name ?? '',
+      qty: Number(row.qty ?? 0),
+      netlineval: Number(row.netlineval ?? 0),
+    }));
+
+    res.json(result);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
