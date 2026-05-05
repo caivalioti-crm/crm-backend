@@ -1,6 +1,12 @@
 const { supabase } = require('../supabaseClient');
 const express = require('express');
 const router = express.Router();
+const multer = require('multer'); 
+
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 10 * 1024 * 1024 } 
+});
 
 const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 

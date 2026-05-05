@@ -5,6 +5,11 @@ const express = require('express');
 const cors = require('cors');
 const erpRoutes = require('./routes/erp');
 const { authMiddleware } = require('./middleware/auth');
+const multer = require('multer');
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 10 * 1024 * 1024 } 
+});
 
 function convertDateToISO(ddmmyy) {
   const [day, month, shortYear] = ddmmyy.split('/');
@@ -15,6 +20,7 @@ function convertDateToISO(ddmmyy) {
 }
 
 const app = express();
+
 
 app.use(cors({
   origin: [
@@ -49,37 +55,87 @@ app.get('/', (req, res) => {
   res.send('CRM backend running');
 });
 
-app.post('/visits/record', authMiddleware, async (req, res) => {
-  if (!req.body) return res.status(400).json({ error: 'Missing request body' });
+app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req, res) => {
+  const customer_code = req.body.customer_code;
+  const visit_date = req.body.visit_date;
+  const visit_time = req.body.visit_time;
+  const visit_type = req.body.visit_type;
+  const notes = req.body.notes;
+  const tasks = typeof req.body.tasks === 'string' ? JSON.parse(req.body.tasks) : (req.body.tasks || []);
+  const categories = typeof req.body.categories === 'string' ? JSON.parse(req.body.categories) : (req.body.categories || []);
 
-  const { entityType, entityId, visitDate, categories } = req.body;
-  const isoVisitDate = convertDateToISO(visitDate);
+  if (!customer_code || !visit_date) {
+    return res.status(400).json({ error: 'customer_code and visit_date are required' });
+  }
 
-  for (const category of categories) {
-    const { categoryCode, subcategoryCodes } = category;
-    if (!subcategoryCodes || subcategoryCodes.length === 0) {
-      const { error } = await supabase.rpc('upsert_category_discussion', {
-        p_entity_type: entityType,
-        p_entity_id: entityId,
-        p_category_code: categoryCode,
-        p_subcategory_code: null,
-        p_visit_date: isoVisitDate
+  let voice_memo_path = null;
+  if (req.file) {
+    const filename = `${req.user.id}/${Date.now()}.webm`;
+    const { error: storageError } = await supabase.storage
+      .from('voice-memos')
+      .upload(filename, req.file.buffer, {
+        contentType: 'audio/webm',
+        upsert: false,
       });
-      if (error) return res.status(500).json({ error: error.message });
+    if (!storageError) {
+      voice_memo_path = filename;
     } else {
-      for (const subCode of subcategoryCodes) {
-        const { error } = await supabase.rpc('upsert_category_discussion', {
-          p_entity_type: entityType,
-          p_entity_id: entityId,
-          p_category_code: categoryCode,
-          p_subcategory_code: subCode,
-          p_visit_date: isoVisitDate
-        });
-        if (error) return res.status(500).json({ error: error.message });
-      }
+      console.error('Voice memo upload error:', storageError);
     }
   }
-  res.json({ success: true });
+
+  const { data: visit, error: visitError } = await supabase
+    .from('crm_visits')
+    .insert({
+      customer_code,
+      salesman_code: req.user.salesman_code ?? '',
+      user_id: req.user.id,
+      visit_date,
+      visit_time: visit_time || null,
+      visit_type: visit_type || 'in-person',
+      notes: notes || '',
+      voice_memo_path,
+    })
+    .select()
+    .single();
+
+  if (visitError) {
+    console.error('Visit insert error:', visitError);
+    return res.status(500).json({ error: visitError.message });
+  }
+
+  if (tasks && tasks.length > 0) {
+    const taskRows = tasks.map(t => ({
+      visit_id: visit.id,
+      description: t.description,
+      reminder_date: t.reminderDate || null,
+      status: 'not-started',
+    }));
+    const { error: taskError } = await supabase.from('crm_visit_tasks').insert(taskRows);
+    if (taskError) return res.status(500).json({ error: taskError.message });
+  }
+
+  if (categories && categories.length > 0) {
+    const categoryRows = categories.map(c => ({
+      visit_id: visit.id,
+      category_code: c.categoryCode,
+      subcategory_code: c.subcategoryCode || null,
+    }));
+    const { error: catError } = await supabase.from('crm_visit_categories').insert(categoryRows);
+    if (catError) return res.status(500).json({ error: catError.message });
+
+    for (const cat of categories) {
+      await supabase.rpc('upsert_category_discussion', {
+        p_entity_type: 'customer',
+        p_entity_id: customer_code,
+        p_category_code: cat.categoryCode,
+        p_subcategory_code: cat.subcategoryCode || null,
+        p_visit_date: visit_date,
+      });
+    }
+  }
+
+  res.json({ success: true, visit });
 });
 
 app.get('/customers/:customerCode/readiness', authMiddleware, async (req, res) => {
@@ -124,11 +180,29 @@ app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (
 });
 
 // ─── VISITS ────────────────────────────────────────────────────────────────
-app.post('/api/visits', authMiddleware, async (req, res) => {
-  const { customer_code, visit_date, visit_time, visit_type, notes, tasks, categories } = req.body;
+app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req, res) => {
+  const tasks = typeof req.body.tasks === 'string' ? JSON.parse(req.body.tasks) : (req.body.tasks || []);
+  const categories = typeof req.body.categories === 'string' ? JSON.parse(req.body.categories) : (req.body.categories || []);
 
   if (!customer_code || !visit_date) {
     return res.status(400).json({ error: 'customer_code and visit_date are required' });
+  }
+
+   // ── Voice memo upload ──────────────────────────────────────────────────────
+  let voice_memo_path = null;
+  if (req.file) {
+    const filename = `${req.user.id}/${Date.now()}.webm`;
+    const { error: storageError } = await supabase.storage
+      .from('voice-memos')
+      .upload(filename, req.file.buffer, {
+        contentType: 'audio/webm',
+        upsert: false,
+      });
+    if (!storageError) {
+      voice_memo_path = filename;
+    } else {
+      console.error('Voice memo upload error:', storageError);
+    }
   }
 
   const { data: visit, error: visitError } = await supabase
@@ -226,6 +300,26 @@ app.get('/api/visits', authMiddleware, async (req, res) => {
   }));
 
   res.json(visitsWithNames);
+});
+
+app.get('/api/visits/:id/voice-memo', authMiddleware, async (req, res) => {
+  const { data: visit, error } = await supabase
+    .from('crm_visits')
+    .select('voice_memo_path')
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !visit?.voice_memo_path) {
+    return res.status(404).json({ error: 'No voice memo found' });
+  }
+
+  const { data, error: urlError } = await supabase.storage
+    .from('voice-memos')
+    .createSignedUrl(visit.voice_memo_path, 3600);
+
+  if (urlError) return res.status(500).json({ error: urlError.message });
+
+  res.json({ url: data.signedUrl });
 });
 
 app.get('/api/categories', authMiddleware, async (req, res) => {
