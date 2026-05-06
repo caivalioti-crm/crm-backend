@@ -860,4 +860,7 @@ app.get('/api/customers/:code/categories', authMiddleware, async (req, res) => {
   res.json(result);
 });
 
-app.listen(process.env.PORT || 3001);
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
