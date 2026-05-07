@@ -19,7 +19,6 @@ router.get('/customers', async (req, res) => {
     let query = supabase
       .from('vw_crm_customers')
       .select('*')
-      .eq('is_active', true)
       .limit(5000);
 
     if (salesmanCode) query = query.eq('salesman_code', salesmanCode);
