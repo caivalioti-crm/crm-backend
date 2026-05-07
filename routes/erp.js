@@ -247,7 +247,9 @@ router.get('/sales/by-area', async (req, res) => {
   try {
     const { from, to, compareFrom, compareTo } = req.query;
     const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
-    const salesmanCode = isRep ? req.user.salesman_code : null;
+    const salesmanCode = isRep 
+      ? req.user.salesman_code 
+      : (req.query.salesmanCode || null);
 
     const [current, compare] = await Promise.all([
       supabase.rpc('get_sales_by_area', {
@@ -286,7 +288,9 @@ router.get('/sales/by-city', async (req, res) => {
   try {
     const { from, to, compareFrom, compareTo, area } = req.query;
     const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
-    const salesmanCode = isRep ? req.user.salesman_code : null;
+    const salesmanCode = isRep 
+      ? req.user.salesman_code 
+      : (req.query.salesmanCode || null);
 
     const [current, compare] = await Promise.all([
       supabase.rpc('get_sales_by_city', {
