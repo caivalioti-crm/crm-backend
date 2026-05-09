@@ -654,4 +654,54 @@ router.get('/customers/:code/documents/:findoc/lines', async (req, res) => {
   }
 });
 
+// GET /api/erp/customers/:code/discounts
+router.get('/customers/:code/discounts', async (req, res) => {
+  try {
+    const { code } = req.params;
+
+    // Get trdr_id from code
+    const { data: customer } = await supabase
+      .from('stg_soft1_trdr')
+      .select('trdr_id, prccategory')
+      .eq('trdr_code', code)
+      .eq('company', 1000)
+      .single();
+
+    if (!customer) return res.json({ general: null, categories: [], brands: [], prccategory: null });
+
+    // Fetch all discount policies for this customer
+    const { data: policies, error } = await supabase
+      .from('stg_soft1_ccctimologiakestrdr')
+      .select('prcrule, catname, mtrcategory, fld01')
+      .eq('trdr', customer.trdr_id);
+
+    if (error) throw error;
+
+    // PRCRULE 101 = general customer discount
+    const general = policies?.find(p => p.prcrule === 101);
+
+    // PRCRULE 302 = per product category discount
+    const categories = (policies ?? [])
+      .filter(p => p.prcrule === 302 && p.fld01 > 0)
+      .map(p => ({ category: p.catname, mtrcategory: p.mtrcategory, discount: p.fld01 }))
+      .sort((a, b) => b.discount - a.discount);
+
+    // PRCRULE 502 = per car brand discount
+    const brands = (policies ?? [])
+      .filter(p => p.prcrule === 502 && p.fld01 > 0)
+      .map(p => ({ brand: p.catname, mtrcategory: p.mtrcategory, discount: p.fld01 }))
+      .sort((a, b) => b.discount - a.discount);
+
+    res.json({
+      general: general ? general.fld01 : null,
+      categories,
+      brands,
+      prccategory: customer.prccategory,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
