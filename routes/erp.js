@@ -40,7 +40,7 @@ router.get('/customers', async (req, res) => {
 async function fetchCustomerFindocs(trdrId, series, from, to) {
   let query = supabase
     .from('stg_soft1_findoc')
-    .select('findoc, trndate, series, seriesnum, fincode')
+    .select('findoc, trndate, series, seriesnum, fincode, disc1prc')
     .eq('trdr', String(trdrId))
     .eq('company', 1000)
     .in('series', series)
@@ -79,6 +79,7 @@ function mapDoc(row, netamntMap) {
     series: row.series,
     type,
     netamnt: isCreditNote ? -netamnt : netamnt,
+    disc1prc: row.disc1prc !== null ? Number(row.disc1prc) : null,
   };
 }
 
@@ -146,16 +147,16 @@ router.get('/customers/:code/documents', async (req, res) => {
 
   if (!customer) return res.json([]);
 
-  // Fetch top 5 of each type in parallel
+  // Fetch top 10 of each type in parallel
   const [invoiceResult, orderResult, creditResult] = await Promise.all([
     fetchCustomerFindocs(customer.trdr_id, [7061, 7062, 7080], from, to),
     fetchCustomerFindocs(customer.trdr_id, ORDER_SERIES, from, to),
     fetchCustomerFindocs(customer.trdr_id, CREDIT_SERIES, from, to),
   ]);
 
-  const invoiceDocs = invoiceResult.findocs.slice(0, 5).map(r => mapDoc(r, invoiceResult.netamntMap));
-  const orderDocs   = orderResult.findocs.slice(0, 5).map(r => mapDoc(r, orderResult.netamntMap));
-  const creditDocs  = creditResult.findocs.slice(0, 5).map(r => mapDoc(r, creditResult.netamntMap));
+  const invoiceDocs = invoiceResult.findocs.slice(0, 10).map(r => mapDoc(r, invoiceResult.netamntMap));
+  const orderDocs   = orderResult.findocs.slice(0, 10).map(r => mapDoc(r, orderResult.netamntMap));
+  const creditDocs  = creditResult.findocs.slice(0, 10).map(r => mapDoc(r, creditResult.netamntMap));
 
   const result = [...invoiceDocs, ...orderDocs, ...creditDocs]
     .sort((a, b) => b.trndate.localeCompare(a.trndate));
@@ -623,10 +624,10 @@ router.get('/customers/:code/documents/:findoc/lines', async (req, res) => {
     const { findoc } = req.params;
 
     const { data: lines, error } = await supabase
-      .from('stg_soft1_mtrlines')
-      .select('mtrl, qty, netlineval')
-      .eq('findoc', parseInt(findoc))
-      .eq('company', 1000);
+    .from('stg_soft1_mtrlines')
+    .select('mtrl, qty, netlineval, disc1prc, vatprc')
+    .eq('findoc', parseInt(findoc))
+    .eq('company', 1000);
 
     if (error) throw error;
     if (!lines || lines.length === 0) return res.json([]);
@@ -640,11 +641,13 @@ router.get('/customers/:code/documents/:findoc/lines', async (req, res) => {
     const mtrlMap = new Map((mtrls ?? []).map(m => [m.mtrl, m]));
 
     const result = lines.map(row => ({
-      mtrl: row.mtrl,
-      sku_code: mtrlMap.get(row.mtrl)?.code ?? '',
-      sku_name: mtrlMap.get(row.mtrl)?.name ?? '',
-      qty: Number(row.qty ?? 0),
+      mtrl:       row.mtrl,
+      sku_code:   mtrlMap.get(row.mtrl)?.code ?? '',
+      sku_name:   mtrlMap.get(row.mtrl)?.name ?? '',
+      qty:        Number(row.qty ?? 0),
       netlineval: Number(row.netlineval ?? 0),
+      disc1prc:   row.disc1prc !== null ? Number(row.disc1prc) : null,
+      vatprc:     row.vatprc   !== null ? Number(row.vatprc)   : null,
     }));
 
     res.json(result);
