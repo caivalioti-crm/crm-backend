@@ -625,7 +625,7 @@ router.get('/customers/:code/documents/:findoc/lines', async (req, res) => {
 
     const { data: lines, error } = await supabase
     .from('stg_soft1_mtrlines')
-    .select('mtrl, qty, netlineval, disc1prc, vatprc')
+    .select('mtrl, qty, netlineval, disc1prc, vatprc, price')
     .eq('findoc', parseInt(findoc))
     .eq('company', 1000);
 
@@ -648,6 +648,7 @@ router.get('/customers/:code/documents/:findoc/lines', async (req, res) => {
       netlineval: Number(row.netlineval ?? 0),
       disc1prc:   row.disc1prc !== null ? Number(row.disc1prc) : null,
       vatprc:     row.vatprc   !== null ? Number(row.vatprc)   : null,
+      price: row.price !== null ? Number(row.price) : null,
     }));
 
     res.json(result);
