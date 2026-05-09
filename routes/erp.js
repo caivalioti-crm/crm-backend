@@ -708,4 +708,23 @@ router.get('/customers/:code/discounts', async (req, res) => {
   }
 });
 
+router.get('/last-sync-date', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('stg_soft1_findoc')
+      .select('trndate')
+      .eq('company', 1000)
+      .order('trndate', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error) throw error;
+    const date = (data?.trndate ?? '').slice(0, 10);
+    res.json({ date });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
