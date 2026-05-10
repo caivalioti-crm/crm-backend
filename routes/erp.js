@@ -43,7 +43,7 @@ async function fetchCustomerFindocs(trdrId, series, from, to) {
     .select('findoc, trndate, series, seriesnum, fincode, disc1prc')
     .eq('trdr', String(trdrId))
     .eq('company', 1000)
-    .in('series', series)
+    .in('series', [7061, 7062, 7080])
     .order('trndate', { ascending: false });
 
   if (from) query = query.gte('trndate', from);
@@ -714,6 +714,7 @@ router.get('/last-sync-date', async (req, res) => {
       .from('stg_soft1_findoc')
       .select('trndate')
       .eq('company', 1000)
+      .in('series', [7061, 7062, 7080, 7063, 7064, 9962, 9964, 7067])
       .order('trndate', { ascending: false })
       .limit(1)
       .single();
