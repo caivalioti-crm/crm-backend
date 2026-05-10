@@ -63,6 +63,8 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
   const notes = req.body.notes;
   const tasks = typeof req.body.tasks === 'string' ? JSON.parse(req.body.tasks) : (req.body.tasks || []);
   const categories = typeof req.body.categories === 'string' ? JSON.parse(req.body.categories) : (req.body.categories || []);
+  const shop_profile = typeof req.body.shop_profile === 'string' ? JSON.parse(req.body.shop_profile) : (req.body.shop_profile || null);
+  const competition_info = typeof req.body.competition_info === 'string' ? JSON.parse(req.body.competition_info) : (req.body.competition_info || null);
 
   if (!customer_code || !visit_date) {
     return res.status(400).json({ error: 'customer_code and visit_date are required' });
@@ -73,15 +75,9 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
     const filename = `${req.user.id}/${Date.now()}.webm`;
     const { error: storageError } = await supabase.storage
       .from('voice-memos')
-      .upload(filename, req.file.buffer, {
-        contentType: 'audio/webm',
-        upsert: false,
-      });
-    if (!storageError) {
-      voice_memo_path = filename;
-    } else {
-      console.error('Voice memo upload error:', storageError);
-    }
+      .upload(filename, req.file.buffer, { contentType: 'audio/webm', upsert: false });
+    if (!storageError) voice_memo_path = filename;
+    else console.error('Voice memo upload error:', storageError);
   }
 
   const { data: visit, error: visitError } = await supabase
@@ -135,6 +131,32 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
     }
   }
 
+  // Upsert shop profile + competition info
+  if (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) {
+    await supabase.from('crm_entity_shop_profile').upsert({
+      entity_type: 'customer',
+      entity_id: customer_code,
+      shop_type: shop_profile.shop_type || null,
+      number_of_employees: shop_profile.numberOfEmployees ?? null,
+      shop_size_m2: shop_profile.shopSizeM2 ?? null,
+      stock_behavior: shop_profile.stockBehavior || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
+  if (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) {
+    await supabase.from('crm_entity_competitor_info').upsert({
+      entity_type: 'customer',
+      entity_id: customer_code,
+      main_competitor: competition_info.mainCompetitor || null,
+      other_competitors: competition_info.otherCompetitors || null,
+      estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
+      competitor_strengths: competition_info.competitorStrengths || null,
+      switch_reason: competition_info.switchReason || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
   res.json({ success: true, visit });
 });
 
@@ -177,85 +199,6 @@ app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (
     .eq('customer_code', customerCode);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true, data });
-});
-
-// ─── VISITS ────────────────────────────────────────────────────────────────
-app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req, res) => {
-  const tasks = typeof req.body.tasks === 'string' ? JSON.parse(req.body.tasks) : (req.body.tasks || []);
-  const categories = typeof req.body.categories === 'string' ? JSON.parse(req.body.categories) : (req.body.categories || []);
-
-  if (!customer_code || !visit_date) {
-    return res.status(400).json({ error: 'customer_code and visit_date are required' });
-  }
-
-   // ── Voice memo upload ──────────────────────────────────────────────────────
-  let voice_memo_path = null;
-  if (req.file) {
-    const filename = `${req.user.id}/${Date.now()}.webm`;
-    const { error: storageError } = await supabase.storage
-      .from('voice-memos')
-      .upload(filename, req.file.buffer, {
-        contentType: 'audio/webm',
-        upsert: false,
-      });
-    if (!storageError) {
-      voice_memo_path = filename;
-    } else {
-      console.error('Voice memo upload error:', storageError);
-    }
-  }
-
-  const { data: visit, error: visitError } = await supabase
-    .from('crm_visits')
-    .insert({
-      customer_code,
-      salesman_code: req.user.salesman_code ?? '',
-      user_id: req.user.id,
-      visit_date,
-      visit_time: visit_time || null,
-      visit_type: visit_type || 'in-person',
-      notes: notes || '',
-    })
-    .select()
-    .single();
-
-  if (visitError) {
-    console.error('Visit insert error:', visitError);
-    return res.status(500).json({ error: visitError.message });
-  }
-
-  if (tasks && tasks.length > 0) {
-    const taskRows = tasks.map(t => ({
-      visit_id: visit.id,
-      description: t.description,
-      reminder_date: t.reminderDate || null,
-      status: 'not-started',
-    }));
-    const { error: taskError } = await supabase.from('crm_visit_tasks').insert(taskRows);
-    if (taskError) return res.status(500).json({ error: taskError.message });
-  }
-
-  if (categories && categories.length > 0) {
-    const categoryRows = categories.map(c => ({
-      visit_id: visit.id,
-      category_code: c.categoryCode,
-      subcategory_code: c.subcategoryCode || null,
-    }));
-    const { error: catError } = await supabase.from('crm_visit_categories').insert(categoryRows);
-    if (catError) return res.status(500).json({ error: catError.message });
-
-    for (const cat of categories) {
-      await supabase.rpc('upsert_category_discussion', {
-        p_entity_type: 'customer',
-        p_entity_id: customer_code,
-        p_category_code: cat.categoryCode,
-        p_subcategory_code: cat.subcategoryCode || null,
-        p_visit_date: visit_date,
-      });
-    }
-  }
-
-  res.json({ success: true, visit });
 });
 
 app.get('/api/visits', authMiddleware, async (req, res) => {
@@ -714,11 +657,27 @@ app.get('/api/prospects/:id/visits', authMiddleware, async (req, res) => {
   res.json(data);
 });
 
-app.post('/api/prospects/:id/visits', authMiddleware, async (req, res) => {
+app.post('/api/prospects/:id/visits', authMiddleware, upload.single('voice_memo'), async (req, res) => {
   const { id } = req.params;
-  const { visit_date, visit_type, notes, outcome, categories } = req.body;
+  const visit_date = req.body.visit_date;
+  const visit_time = req.body.visit_time;
+  const visit_type = req.body.visit_type;
+  const notes = req.body.notes;
+  const categories = typeof req.body.categories === 'string' ? JSON.parse(req.body.categories) : (req.body.categories || []);
+  const shop_profile = typeof req.body.shop_profile === 'string' ? JSON.parse(req.body.shop_profile) : (req.body.shop_profile || null);
+  const competition_info = typeof req.body.competition_info === 'string' ? JSON.parse(req.body.competition_info) : (req.body.competition_info || null);
 
   if (!visit_date) return res.status(400).json({ error: 'visit_date is required' });
+
+  let voice_memo_path = null;
+  if (req.file) {
+    const filename = `${req.user.id}/prospect-${Date.now()}.webm`;
+    const { error: storageError } = await supabase.storage
+      .from('voice-memos')
+      .upload(filename, req.file.buffer, { contentType: 'audio/webm', upsert: false });
+    if (!storageError) voice_memo_path = filename;
+    else console.error('Voice memo upload error:', storageError);
+  }
 
   const { data: visit, error } = await supabase
     .from('crm_prospect_visits')
@@ -726,16 +685,17 @@ app.post('/api/prospects/:id/visits', authMiddleware, async (req, res) => {
       prospect_id: id,
       user_id: req.user.id,
       visit_date,
+      visit_time: visit_time || null,
       visit_type: visit_type || 'in-person',
-      notes,
-      outcome: outcome || 'interested',
+      notes: notes || '',
+      outcome: 'interested',
+      voice_memo_path,
     })
     .select()
     .single();
 
   if (error) return res.status(500).json({ error: error.message });
 
-  // Insert categories
   if (categories && categories.length > 0) {
     const categoryRows = categories.map(c => ({
       prospect_visit_id: visit.id,
@@ -743,9 +703,43 @@ app.post('/api/prospects/:id/visits', authMiddleware, async (req, res) => {
       subcategory_code: c.subcategoryCode || null,
     }));
     await supabase.from('crm_prospect_visit_categories').insert(categoryRows);
+
+    for (const cat of categories) {
+      await supabase.rpc('upsert_category_discussion', {
+        p_entity_type: 'prospect',
+        p_entity_id: id,
+        p_category_code: cat.categoryCode,
+        p_subcategory_code: cat.subcategoryCode || null,
+        p_visit_date: visit_date,
+      });
+    }
   }
 
-  // Update prospect status
+  if (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) {
+    await supabase.from('crm_entity_shop_profile').upsert({
+      entity_type: 'prospect',
+      entity_id: id,
+      shop_type: shop_profile.shop_type || null,
+      number_of_employees: shop_profile.numberOfEmployees ?? null,
+      shop_size_m2: shop_profile.shopSizeM2 ?? null,
+      stock_behavior: shop_profile.stockBehavior || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
+  if (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) {
+    await supabase.from('crm_entity_competitor_info').upsert({
+      entity_type: 'prospect',
+      entity_id: id,
+      main_competitor: competition_info.mainCompetitor || null,
+      other_competitors: competition_info.otherCompetitors || null,
+      estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
+      competitor_strengths: competition_info.competitorStrengths || null,
+      switch_reason: competition_info.switchReason || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'entity_type,entity_id' });
+  }
+
   await supabase.from('crm_prospects')
     .update({ status: 'visited', updated_at: new Date().toISOString() })
     .eq('id', id)

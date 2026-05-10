@@ -289,6 +289,7 @@ router.get('/sales', async (req, res) => {
       customerCode: String(row.trdr),
       netAmount:    Number(row.total_netamnt ?? 0),
       invoiceCount: Number(row.invoice_count ?? 0),
+      
     }));
 
     res.json(mapped);
