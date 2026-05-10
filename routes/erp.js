@@ -789,6 +789,21 @@ router.get('/customers/:code/sales-by-branch', async (req, res) => {
       prev: prev[k] ?? 0,
     })).sort((a, b) => (a.trdbranch ?? -1) - (b.trdbranch ?? -1));
 
+    const branchIds = result.filter(r => r.trdbranch !== null).map(r => r.trdbranch);
+    if (branchIds.length > 0) {
+      const { data: branches } = await supabase
+        .from('stg_soft1_trdbranch')
+        .select('trdbranch, name, city')
+        .in('trdbranch', branchIds);
+      const branchMap = new Map((branches ?? []).map(b => [b.trdbranch, b]));
+      result.forEach(r => {
+        if (r.trdbranch !== null) {
+          const b = branchMap.get(r.trdbranch);
+          if (b) r.label = b.city ? b.city : (b.name ?? `Υποκ. ${r.trdbranch}`);
+        }
+      });
+    }
+
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
