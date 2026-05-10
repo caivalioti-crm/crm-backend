@@ -115,7 +115,7 @@ router.get('/customers/:code/sales', async (req, res) => {
 
   if (!customer) return res.json([]);
 
-  const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, INVOICE_SERIES, from, to);
+  const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, [...INVOICE_SERIES, ...CREDIT_SERIES], from, to);
   if (!findocs.length) return res.json([]);
 
   const byMonth = {};
@@ -737,6 +737,59 @@ router.get('/last-invoice-date', async (req, res) => {
       .single();
     if (error) throw error;
     res.json({ date: (data?.trndate ?? '').slice(0, 10) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/customers/:code/sales-by-branch', async (req, res) => {
+  try {
+    const { code } = req.params;
+    const { from, to, prevFrom, prevTo } = req.query;
+
+    const { data: customerData } = await supabase
+      .from('stg_soft1_trdr')
+      .select('trdr_id')
+      .eq('trdr_code', code)
+      .eq('company', 1000)
+      .single();
+
+    if (!customerData) return res.status(404).json({ error: 'Not found' });
+
+    const fetchPeriod = async (dateFrom, dateTo) => {
+      const { data, error } = await supabase
+        .from('stg_soft1_findoc')
+        .select('trdbranch, netamnt, series')
+        .eq('company', 1000)
+        .eq('trdr', String(customerData.trdr_id))
+        .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
+        .gte('trndate', dateFrom)
+        .lt('trndate', dateTo);
+      if (error) throw error;
+      const map = {};
+      for (const row of data ?? []) {
+        const key = row.trdbranch !== null ? String(row.trdbranch) : 'hq';
+        const amount = Number(row.netamnt ?? 0);
+        const net = CREDIT_SERIES.includes(row.series) ? -amount : amount;
+        map[key] = (map[key] ?? 0) + net;
+      }
+      return map;
+    };
+
+    const [current, prev] = await Promise.all([
+      fetchPeriod(from, to),
+      fetchPeriod(prevFrom, prevTo),
+    ]);
+
+    const keys = new Set([...Object.keys(current), ...Object.keys(prev)]);
+    const result = Array.from(keys).map(k => ({
+      trdbranch: k === 'hq' ? null : Number(k),
+      label: k === 'hq' ? 'Κεντρικό' : `Υποκ. ${k}`,
+      current: current[k] ?? 0,
+      prev: prev[k] ?? 0,
+    })).sort((a, b) => (a.trdbranch ?? -1) - (b.trdbranch ?? -1));
+
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
