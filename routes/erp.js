@@ -43,7 +43,7 @@ async function fetchCustomerFindocs(trdrId, series, from, to) {
     .select('findoc, trndate, series, seriesnum, fincode, disc1prc')
     .eq('trdr', String(trdrId))
     .eq('company', 1000)
-    .in('series', [7061, 7062, 7080])
+    .in('series', series)
     .order('trndate', { ascending: false });
 
   if (from) query = query.gte('trndate', from);
@@ -96,7 +96,7 @@ const SERIES_TYPE = {
 };
 
 const CREDIT_SERIES  = [7063, 7064, 9962];
-const INVOICE_SERIES = [7061, 7062, 7080, 7063, 7064, 9962];
+const INVOICE_SERIES = [7061, 7062, 7080];
 const ORDER_SERIES   = [7021, 7025, 7026, 7027];
 const ALL_SERIES     = [7021, 7025, 7026, 7027, 7061, 7062, 7080, 7063, 7064, 9962];
 
