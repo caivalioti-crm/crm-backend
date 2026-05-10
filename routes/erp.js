@@ -40,7 +40,7 @@ router.get('/customers', async (req, res) => {
 async function fetchCustomerFindocs(trdrId, series, from, to) {
   let query = supabase
     .from('stg_soft1_findoc')
-    .select('findoc, trndate, series, seriesnum, fincode, disc1prc')
+    .select('findoc, trndate, series, seriesnum, fincode, disc1prc, sumamnt')
     .eq('trdr', String(trdrId))
     .eq('company', 1000)
     .in('series', series)
@@ -80,6 +80,7 @@ function mapDoc(row, netamntMap) {
     type,
     netamnt: isCreditNote ? -netamnt : netamnt,
     disc1prc: row.disc1prc !== null ? Number(row.disc1prc) : null,
+    sumamnt: row.sumamnt !== null ? Number(row.sumamnt) : null,
   };
 }
 
