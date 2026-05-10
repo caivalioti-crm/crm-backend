@@ -260,9 +260,8 @@ router.get('/sales/monthly', async (req, res) => {
       .eq('company', 1000);
 
     const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
-console.log('findocIds sample:', findocIds.slice(0, 3));
-console.log('netamnts sample:', (netamnts ?? []).slice(0, 3));
-console.log('netamntMap size:', netamntMap.size);
+
+    
     const byMonth = {};
     for (const row of findocs ?? []) {
       if (allowedTrdrs && !allowedTrdrs.has(String(row.trdr))) continue;
