@@ -714,16 +714,29 @@ router.get('/last-sync-date', async (req, res) => {
       .from('stg_soft1_findoc')
       .select('trndate')
       .eq('company', 1000)
+      .order('trndate', { ascending: false })
+      .limit(1)
+      .single();
+    if (error) throw error;
+    res.json({ date: (data?.trndate ?? '').slice(0, 10) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/last-invoice-date', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('stg_soft1_findoc')
+      .select('trndate')
+      .eq('company', 1000)
       .in('series', [7061, 7062, 7080, 7063, 7064, 9962, 9964, 7067])
       .order('trndate', { ascending: false })
       .limit(1)
       .single();
-
     if (error) throw error;
-    const date = (data?.trndate ?? '').slice(0, 10);
-    res.json({ date });
+    res.json({ date: (data?.trndate ?? '').slice(0, 10) });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
