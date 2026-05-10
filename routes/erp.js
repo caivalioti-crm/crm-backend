@@ -115,8 +115,27 @@ router.get('/customers/:code/sales', async (req, res) => {
 
   if (!customer) return res.json([]);
 
-  const { findocs, netamntMap } = await fetchCustomerFindocs(customer.trdr_id, [...INVOICE_SERIES, ...CREDIT_SERIES], from, to);
+  const { findocs, netamntMap } = await fetchCustomerFindocs(
+    customer.trdr_id, [...INVOICE_SERIES, ...CREDIT_SERIES], from, to
+  );
   if (!findocs.length) return res.json([]);
+
+  // Fetch qty from mtrlines for invoice series only
+  const invoiceFindocIds = findocs
+    .filter(r => INVOICE_SERIES.includes(r.series))
+    .map(r => r.findoc);
+
+  let qtyByFindoc = new Map();
+  if (invoiceFindocIds.length > 0) {
+    const { data: lines } = await supabase
+      .from('stg_soft1_mtrlines')
+      .select('findoc, qty')
+      .eq('company', 1000)
+      .in('findoc', invoiceFindocIds);
+    for (const line of lines ?? []) {
+      qtyByFindoc.set(line.findoc, (qtyByFindoc.get(line.findoc) ?? 0) + Number(line.qty ?? 0));
+    }
+  }
 
   const byMonth = {};
   findocs.forEach(row => {
@@ -124,11 +143,13 @@ router.get('/customers/:code/sales', async (req, res) => {
     if (!month) return;
     const amount = netamntMap.get(row.findoc) ?? 0;
     const isCreditNote = CREDIT_SERIES.includes(row.series);
-    byMonth[month] = (byMonth[month] ?? 0) + (isCreditNote ? -amount : amount);
+    if (!byMonth[month]) byMonth[month] = { netamnt: 0, qty: 0 };
+    byMonth[month].netamnt += isCreditNote ? -amount : amount;
+    if (!isCreditNote) byMonth[month].qty += qtyByFindoc.get(row.findoc) ?? 0;
   });
 
   const result = Object.entries(byMonth)
-    .map(([month, netamnt]) => ({ month, netamnt }))
+    .map(([month, data]) => ({ month, netamnt: data.netamnt, qty: Math.round(data.qty) }))
     .sort((a, b) => b.month.localeCompare(a.month));
 
   res.json(result);
@@ -199,6 +220,68 @@ router.get('/customers/:code/balance', async (req, res) => {
   }
 });
 
+router.get('/sales/monthly', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
+    const salesmanCode = isRep ? req.user.salesman_code : (req.query.salesmanCode || null);
+
+    let query = supabase
+      .from('stg_soft1_findoc')
+      .select('trndate, series, findoc, trdr')
+      .eq('company', 1000)
+      .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
+      .gte('trndate', from)
+      .lt('trndate', to);
+
+    const { data: findocs, error } = await query;
+    if (error) throw error;
+
+    // If salesman filter, get their customer trdr_ids
+    let allowedTrdrs = null;
+    if (salesmanCode) {
+      const { data: customers } = await supabase
+        .from('vw_crm_customers')
+        .select('trdr_id')
+        .eq('salesman_code', salesmanCode);
+      allowedTrdrs = new Set((customers ?? []).map(c => String(c.trdr_id)));
+    }
+
+    const findocIds = (findocs ?? [])
+      .filter(r => !allowedTrdrs || allowedTrdrs.has(String(r.trdr)))
+      .map(r => r.findoc);
+
+    if (findocIds.length === 0) return res.json([]);
+
+    const { data: netamnts } = await supabase
+      .from('stg_soft1_findoc_netamnt')
+      .select('findoc, netamnt')
+      .in('findoc', findocIds)
+      .eq('company', 1000);
+
+    const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
+
+    const byMonth = {};
+    for (const row of findocs ?? []) {
+      if (allowedTrdrs && !allowedTrdrs.has(String(row.trdr))) continue;
+      const month = (row.trndate ?? '').slice(0, 7);
+      if (!month) continue;
+      const amount = netamntMap.get(row.findoc) ?? 0;
+      const isCreditNote = CREDIT_SERIES.includes(row.series);
+      byMonth[month] = (byMonth[month] ?? 0) + (isCreditNote ? -amount : amount);
+    }
+
+    const result = Object.entries(byMonth)
+      .map(([month, netamnt]) => ({ month, netamnt }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Sales summary (dashboard)
 router.get('/sales', async (req, res) => {
   try {
@@ -243,6 +326,8 @@ router.get('/categories/purchased', async (req, res) => {
     res.status(500).json({ error: 'Unexpected server error' });
   }
 });
+
+
 
 // Sales by area
 router.get('/sales/by-area', async (req, res) => {
@@ -821,5 +906,7 @@ router.get('/customers/:code/sales-by-branch', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
 
 module.exports = router;
