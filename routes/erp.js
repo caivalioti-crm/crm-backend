@@ -226,18 +226,16 @@ router.get('/sales/monthly', async (req, res) => {
     const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
     const salesmanCode = isRep ? req.user.salesman_code : (req.query.salesmanCode || null);
 
-    let query = supabase
+    const { data: findocs, error } = await supabase
       .from('stg_soft1_findoc')
-      .select('trndate, series, findoc, trdr')
+      .select('trndate, series, trdr, netamnt')
       .eq('company', 1000)
       .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
       .gte('trndate', from)
       .lt('trndate', to);
 
-    const { data: findocs, error } = await query;
     if (error) throw error;
 
-    // If salesman filter, get their customer trdr_ids
     let allowedTrdrs = null;
     if (salesmanCode) {
       const { data: customers } = await supabase
@@ -247,27 +245,12 @@ router.get('/sales/monthly', async (req, res) => {
       allowedTrdrs = new Set((customers ?? []).map(c => String(c.trdr_id)));
     }
 
-    const findocIds = (findocs ?? [])
-      .filter(r => !allowedTrdrs || allowedTrdrs.has(String(r.trdr)))
-      .map(r => r.findoc);
-
-    if (findocIds.length === 0) return res.json([]);
-
-    const { data: netamnts } = await supabase
-      .from('stg_soft1_findoc_netamnt')
-      .select('findoc, netamnt')
-      .in('findoc', findocIds)
-      .eq('company', 1000);
-
-    const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
-
-    
     const byMonth = {};
     for (const row of findocs ?? []) {
       if (allowedTrdrs && !allowedTrdrs.has(String(row.trdr))) continue;
       const month = (row.trndate ?? '').slice(0, 7);
       if (!month) continue;
-      const amount = netamntMap.get(row.findoc) ?? 0;
+      const amount = Number(row.netamnt ?? 0);
       const isCreditNote = CREDIT_SERIES.includes(row.series);
       byMonth[month] = (byMonth[month] ?? 0) + (isCreditNote ? -amount : amount);
     }
