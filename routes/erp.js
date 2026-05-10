@@ -232,7 +232,8 @@ router.get('/sales/monthly', async (req, res) => {
       .eq('company', 1000)
       .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
       .gte('trndate', from)
-      .lt('trndate', to);
+      .lt('trndate', to)
+      .limit(100000);
 
     if (error) throw error;
 
