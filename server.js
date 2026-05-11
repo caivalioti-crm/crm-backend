@@ -1023,32 +1023,26 @@ app.get('/api/customers/:code/category-intelligence', authMiddleware, async (req
     const getName = (c) => masterMap.get(c)?.full_name ?? c;
     const getLevel = (c) => masterMap.get(c)?.level ?? levelMap.get(c) ?? 1;
 
-    // 5. Similar customers — bidirectional (stored as A < B)
-    const { data: simA } = await supabase
-      .from('mv_customer_category_similarity')
-      .select('customer_b')
-      .eq('customer_a', code);
-    const { data: simB } = await supabase
-      .from('mv_customer_category_similarity')
-      .select('customer_a')
-      .eq('customer_b', code);
+    // 5. Similar customers
+    const { data: simData } = await supabase
+      .rpc('get_similar_customers', { p_customer_code: code });
 
-    const similarCodes = [
-      ...new Set([
-        ...(simA ?? []).map(r => r.customer_b),
-        ...(simB ?? []).map(r => r.customer_a),
-      ])
-    ];
+    const similarCodes = [...new Set((simData ?? []).map(r => r.similar_code))];
     const similarCount = similarCodes.length;
 
     // 6. Peer category sales + buyer count
     const peerL1Rev = new Map();
     const peerL2Rev = new Map();
-    const peerL1Buyers = new Map(); // cat -> Set of customer codes
+    const peerL1Buyers = new Map();
     const peerL2Buyers = new Map();
 
     if (similarCount > 0) {
       const CHUNK = 50;
+      const chunks = [];
+      for (let i = 0; i < similarCodes.length; i += CHUNK) {
+        chunks.push(similarCodes.slice(i, i + CHUNK));
+      }
+
       for (const chunk of chunks) {
         const { data: peerRaw } = await supabase
           .rpc('get_peer_category_sales_intel', {
@@ -1072,7 +1066,7 @@ app.get('/api/customers/:code/category-intelligence', authMiddleware, async (req
       }
     }
 
-    // Also fetch names for peer categories not in customer's own data
+    // Fetch names for peer categories not in customer's own data
     const peerCodes = new Set([...peerL1Rev.keys(), ...peerL2Rev.keys()]);
     const unknownCodes = [...peerCodes].filter(c => !masterMap.has(c));
     if (unknownCodes.length > 0) {
