@@ -191,22 +191,11 @@ router.get('/customers/:code/balance', async (req, res) => {
   try {
     const { code } = req.params;
 
-    // Look up trdr_id from trdr_code
-    const { data: customer } = await supabase
-      .from('stg_soft1_trdr')
-      .select('trdr_id')
-      .eq('trdr_code', code)
-      .eq('company', 1000)
-      .single();
-
-    if (!customer) return res.json({ balance: 0, entries: [] });
-
-    const trdrId = customer.trdr_id;
-
     const { data: balData, error: balError } = await supabase
-      .from('stg_soft1_custbalance')
-      .select('debit, credit')
-      .eq('cuscode', trdrId);
+    .from('stg_soft1_custbalance')
+    .select('debit, credit')
+    .eq('cuscode', parseInt(code))
+    .eq('company', 1000);
 
     if (balError) throw balError;
 
@@ -217,11 +206,12 @@ router.get('/customers/:code/balance', async (req, res) => {
     ) / 100;
 
     const { data: entries, error: entError } = await supabase
-      .from('stg_soft1_custbalance')
-      .select('trndate, fincode, seira, debit, credit')
-      .eq('cuscode', trdrId)
-      .order('trndate', { ascending: false })
-      .limit(10);
+    .from('stg_soft1_custbalance')
+    .select('trndate, fincode, seira, debit, credit')
+    .eq('cuscode', parseInt(code))
+    .eq('company', 1000)
+    .order('trndate', { ascending: false })
+    .limit(10);
 
     if (entError) throw entError;
 
