@@ -854,6 +854,431 @@ app.get('/api/customers/:code/categories', authMiddleware, async (req, res) => {
   res.json(result);
 });
 
+// ─── CATEGORY INTELLIGENCE ────────────────────────────────────────────────────
+
+app.get('/api/customers/:code/category-scope', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const { data, error } = await supabase
+    .from('crm_customer_category_scope')
+    .select('*')
+    .eq('customer_code', code)
+    .eq('out_of_scope', true);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data ?? []);
+});
+
+app.post('/api/customers/:code/category-scope', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const { category_code, category_level } = req.body;
+  if (!category_code) return res.status(400).json({ error: 'category_code required' });
+  const { error } = await supabase
+    .from('crm_customer_category_scope')
+    .upsert({
+      customer_code: code,
+      category_code,
+      category_level: category_level ?? 1,
+      out_of_scope: true,
+      out_of_scope_at: new Date().toISOString(),
+      out_of_scope_by: req.user.id,
+    }, { onConflict: 'customer_code,category_code' });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.delete('/api/customers/:code/category-scope/:categoryCode', authMiddleware, async (req, res) => {
+  const { code, categoryCode } = req.params;
+  const { error } = await supabase
+    .from('crm_customer_category_scope')
+    .update({ out_of_scope: false, out_of_scope_at: null, out_of_scope_by: null })
+    .eq('customer_code', code)
+    .eq('category_code', categoryCode);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+app.get('/api/customers/:code/category-opportunities', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const { data, error } = await supabase
+    .from('crm_category_opportunities')
+    .select('*')
+    .eq('customer_code', code)
+    .order('updated_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data ?? []);
+});
+
+app.post('/api/customers/:code/category-opportunities', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const {
+    opportunity_type, category_code, category_level,
+    category_name, signal_value, signal_context, status, notes,
+  } = req.body;
+  const { data, error } = await supabase
+    .from('crm_category_opportunities')
+    .upsert({
+      customer_code: code,
+      opportunity_type,
+      category_code,
+      category_level: category_level ?? 1,
+      category_name,
+      signal_value,
+      signal_context,
+      status: status ?? 'open',
+      notes,
+      updated_at: new Date().toISOString(),
+      created_by: req.user.id,
+    }, { onConflict: 'customer_code,category_code,opportunity_type' })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.get('/api/customers/:code/category-intelligence', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const { from, to, prevFrom, prevTo } = req.query;
+  if (!from || !to || !prevFrom || !prevTo) {
+    return res.status(400).json({ error: 'from, to, prevFrom, prevTo required' });
+  }
+
+  try {
+    // 1. Out-of-scope categories
+    const { data: scopeData } = await supabase
+      .from('crm_customer_category_scope')
+      .select('category_code')
+      .eq('customer_code', code)
+      .eq('out_of_scope', true);
+    const outOfScope = new Set((scopeData ?? []).map(s => s.category_code));
+
+    // 2. Existing opportunity statuses
+    const { data: oppData } = await supabase
+      .from('crm_category_opportunities')
+      .select('category_code, opportunity_type, status, notes')
+      .eq('customer_code', code);
+    const oppMap = new Map((oppData ?? []).map(o => [
+      `${o.opportunity_type}__${o.category_code}`, o
+    ]));
+
+    // 3. This customer's sales — current period
+    const { data: currRaw, error: currErr } = await supabase
+      .from('vw_crm_customer_category_sales')
+      .select('l1_code, l2_code, netamnt, category_id, full_name, level')
+      .eq('customer_code', code)
+      .gte('trndate', from)
+      .lte('trndate', to);
+    if (currErr) throw currErr;
+
+    // 4. This customer's sales — prev period
+    const { data: prevRaw, error: prevErr } = await supabase
+      .from('vw_crm_customer_category_sales')
+      .select('l1_code, l2_code, netamnt, category_id, full_name, level')
+      .eq('customer_code', code)
+      .gte('trndate', prevFrom)
+      .lte('trndate', prevTo);
+    if (prevErr) throw prevErr;
+
+    // Aggregate helpers
+    const aggL1 = (rows) => {
+      const m = new Map();
+      (rows ?? []).forEach(r => {
+        if (r.l1_code) m.set(r.l1_code, (m.get(r.l1_code) ?? 0) + Number(r.netamnt ?? 0));
+      });
+      return m;
+    };
+    const aggL2 = (rows) => {
+      const m = new Map();
+      (rows ?? []).forEach(r => {
+        if (r.l2_code) m.set(r.l2_code, (m.get(r.l2_code) ?? 0) + Number(r.netamnt ?? 0));
+      });
+      return m;
+    };
+
+    const currL1 = aggL1(currRaw);
+    const prevL1 = aggL1(prevRaw);
+    const currL2 = aggL2(currRaw);
+    const prevL2 = aggL2(prevRaw);
+
+    // Total revenue for significance calculation
+    const prevTotal = [...prevL1.values()].reduce((s, v) => s + v, 0);
+
+    // Top-3 L1 by prev revenue
+    const prevL1Sorted = [...prevL1.entries()].sort((a, b) => b[1] - a[1]);
+    const top3L1 = new Set(prevL1Sorted.slice(0, 3).map(([k]) => k));
+
+    // Category name lookup from view rows
+    const nameMap = new Map();
+    const levelMap = new Map();
+    [...(currRaw ?? []), ...(prevRaw ?? [])].forEach(r => {
+      if (r.l1_code) { nameMap.set(r.l1_code, r.l1_code); levelMap.set(r.l1_code, 1); }
+      if (r.l2_code) { nameMap.set(r.l2_code, r.l2_code); levelMap.set(r.l2_code, 2); }
+    });
+
+    // Get full names from crm_category_master
+    const allCodes = new Set([...currL1.keys(), ...prevL1.keys(), ...currL2.keys(), ...prevL2.keys()]);
+    const { data: masters } = await supabase
+      .from('crm_category_master')
+      .select('category_code, full_name, level')
+      .in('category_code', [...allCodes]);
+    const masterMap = new Map((masters ?? []).map(m => [m.category_code, m]));
+    const getName = (c) => masterMap.get(c)?.full_name ?? c;
+    const getLevel = (c) => masterMap.get(c)?.level ?? levelMap.get(c) ?? 1;
+
+    // 5. Similar customers — bidirectional (stored as A < B)
+    const { data: simA } = await supabase
+      .from('mv_customer_category_similarity')
+      .select('customer_b')
+      .eq('customer_a', code);
+    const { data: simB } = await supabase
+      .from('mv_customer_category_similarity')
+      .select('customer_a')
+      .eq('customer_b', code);
+
+    const similarCodes = [
+      ...new Set([
+        ...(simA ?? []).map(r => r.customer_b),
+        ...(simB ?? []).map(r => r.customer_a),
+      ])
+    ];
+    const similarCount = similarCodes.length;
+
+    // 6. Peer category sales + buyer count
+    const peerL1Rev = new Map();
+    const peerL2Rev = new Map();
+    const peerL1Buyers = new Map(); // cat -> Set of customer codes
+    const peerL2Buyers = new Map();
+
+    if (similarCount > 0) {
+      const CHUNK = 50;
+      for (let i = 0; i < similarCodes.length; i += CHUNK) {
+        const chunk = similarCodes.slice(i, i + CHUNK);
+        const { data: peerRaw } = await supabase
+          .from('vw_crm_customer_category_sales')
+          .select('customer_code, l1_code, l2_code, netamnt')
+          .in('customer_code', chunk)
+          .gte('trndate', from)
+          .lte('trndate', to);
+
+        (peerRaw ?? []).forEach(r => {
+          if (r.l1_code) {
+            peerL1Rev.set(r.l1_code, (peerL1Rev.get(r.l1_code) ?? 0) + Number(r.netamnt ?? 0));
+            if (!peerL1Buyers.has(r.l1_code)) peerL1Buyers.set(r.l1_code, new Set());
+            peerL1Buyers.get(r.l1_code).add(r.customer_code);
+          }
+          if (r.l2_code) {
+            peerL2Rev.set(r.l2_code, (peerL2Rev.get(r.l2_code) ?? 0) + Number(r.netamnt ?? 0));
+            if (!peerL2Buyers.has(r.l2_code)) peerL2Buyers.set(r.l2_code, new Set());
+            peerL2Buyers.get(r.l2_code).add(r.customer_code);
+          }
+        });
+      }
+    }
+
+    // Also fetch names for peer categories not in customer's own data
+    const peerCodes = new Set([...peerL1Rev.keys(), ...peerL2Rev.keys()]);
+    const unknownCodes = [...peerCodes].filter(c => !masterMap.has(c));
+    if (unknownCodes.length > 0) {
+      const { data: extraMasters } = await supabase
+        .from('crm_category_master')
+        .select('category_code, full_name, level')
+        .in('category_code', unknownCodes);
+      (extraMasters ?? []).forEach(m => masterMap.set(m.category_code, m));
+    }
+
+    // ── SIGNAL 1: DECLINING ──────────────────────────────────────────────────
+    const declining = [];
+
+    // Check L1
+    prevL1.forEach((prevRev, cat) => {
+      if (outOfScope.has(cat)) return;
+      if (prevRev < 500) return;
+      const currRev = currL1.get(cat) ?? 0;
+      const pctOfTotal = prevTotal > 0 ? prevRev / prevTotal : 0;
+      const isSignificant = pctOfTotal >= 0.05 || top3L1.has(cat);
+      const drop = (prevRev - currRev) / prevRev;
+      if (!isSignificant || drop <= 0.5) return;
+
+      const oppKey = `declining__${cat}`;
+      const existing = oppMap.get(oppKey);
+      if (existing?.status === 'dismissed') return;
+
+      declining.push({
+        category_code: cat,
+        category_name: getName(cat),
+        category_level: 1,
+        prev_revenue: Math.round(prevRev),
+        curr_revenue: Math.round(currRev),
+        drop_pct: Math.round(drop * 100),
+        pct_of_total: Math.round(pctOfTotal * 100),
+        was_top3: top3L1.has(cat),
+        status: existing?.status ?? 'open',
+        notes: existing?.notes ?? null,
+      });
+    });
+
+    // Check L2
+    prevL2.forEach((prevRev, cat) => {
+      if (outOfScope.has(cat)) return;
+      if (prevRev < 300) return;
+      const currRev = currL2.get(cat) ?? 0;
+      const drop = (prevRev - currRev) / prevRev;
+      if (drop <= 0.5) return;
+      // Only include L2 if its parent L1 is NOT already in declining
+      const l1Parent = cat.split('.')[0];
+      if (declining.some(d => d.category_code === l1Parent)) return;
+
+      const oppKey = `declining__${cat}`;
+      const existing = oppMap.get(oppKey);
+      if (existing?.status === 'dismissed') return;
+
+      declining.push({
+        category_code: cat,
+        category_name: getName(cat),
+        category_level: 2,
+        prev_revenue: Math.round(prevRev),
+        curr_revenue: Math.round(currRev),
+        drop_pct: Math.round(drop * 100),
+        pct_of_total: 0,
+        was_top3: false,
+        status: existing?.status ?? 'open',
+        notes: existing?.notes ?? null,
+      });
+    });
+
+    declining.sort((a, b) => b.prev_revenue - a.prev_revenue);
+
+    // ── SIGNAL 2: MISSING ────────────────────────────────────────────────────
+    const missing = [];
+
+    if (similarCount > 0) {
+      // L1 missing
+      peerL1Buyers.forEach((buyers, cat) => {
+        if (outOfScope.has(cat)) return;
+        if ((currL1.get(cat) ?? 0) > 0) return;
+        const penetration = buyers.size / similarCount;
+        if (penetration < 0.5) return;
+
+        const oppKey = `missing__${cat}`;
+        const existing = oppMap.get(oppKey);
+        if (existing?.status === 'dismissed') return;
+
+        missing.push({
+          category_code: cat,
+          category_name: getName(cat),
+          category_level: 1,
+          peer_penetration_pct: Math.round(penetration * 100),
+          peer_avg_revenue: Math.round((peerL1Rev.get(cat) ?? 0) / similarCount),
+          peer_buyer_count: buyers.size,
+          similar_customer_count: similarCount,
+          status: existing?.status ?? 'open',
+          notes: existing?.notes ?? null,
+        });
+      });
+
+      // L2 missing
+      peerL2Buyers.forEach((buyers, cat) => {
+        if (outOfScope.has(cat)) return;
+        if ((currL2.get(cat) ?? 0) > 0) return;
+        const penetration = buyers.size / similarCount;
+        if (penetration < 0.5) return;
+        // Only show L2 if parent L1 is not already missing
+        const l1Parent = cat.split('.')[0];
+        if (missing.some(m => m.category_code === l1Parent)) return;
+
+        const oppKey = `missing__${cat}`;
+        const existing = oppMap.get(oppKey);
+        if (existing?.status === 'dismissed') return;
+
+        missing.push({
+          category_code: cat,
+          category_name: getName(cat),
+          category_level: 2,
+          peer_penetration_pct: Math.round(penetration * 100),
+          peer_avg_revenue: Math.round((peerL2Rev.get(cat) ?? 0) / similarCount),
+          peer_buyer_count: buyers.size,
+          similar_customer_count: similarCount,
+          status: existing?.status ?? 'open',
+          notes: existing?.notes ?? null,
+        });
+      });
+
+      missing.sort((a, b) => b.peer_penetration_pct - a.peer_penetration_pct);
+    }
+
+    // ── SIGNAL 3: WEAK ───────────────────────────────────────────────────────
+    const weak = [];
+
+    if (similarCount > 0) {
+      // L1 weak
+      currL1.forEach((currRev, cat) => {
+        if (outOfScope.has(cat)) return;
+        if (currRev <= 0) return;
+        const peerAvg = (peerL1Rev.get(cat) ?? 0) / similarCount;
+        if (peerAvg < 300) return;
+        const ratio = currRev / peerAvg;
+        if (ratio >= 0.3) return;
+
+        const oppKey = `weak__${cat}`;
+        const existing = oppMap.get(oppKey);
+        if (existing?.status === 'dismissed') return;
+
+        weak.push({
+          category_code: cat,
+          category_name: getName(cat),
+          category_level: 1,
+          curr_revenue: Math.round(currRev),
+          peer_avg_revenue: Math.round(peerAvg),
+          gap_revenue: Math.round(peerAvg - currRev),
+          ratio_pct: Math.round(ratio * 100),
+          status: existing?.status ?? 'open',
+          notes: existing?.notes ?? null,
+        });
+      });
+
+      // L2 weak
+      currL2.forEach((currRev, cat) => {
+        if (outOfScope.has(cat)) return;
+        if (currRev <= 0) return;
+        const peerAvg = (peerL2Rev.get(cat) ?? 0) / similarCount;
+        if (peerAvg < 200) return;
+        const ratio = currRev / peerAvg;
+        if (ratio >= 0.3) return;
+        const l1Parent = cat.split('.')[0];
+        if (weak.some(w => w.category_code === l1Parent)) return;
+
+        const oppKey = `weak__${cat}`;
+        const existing = oppMap.get(oppKey);
+        if (existing?.status === 'dismissed') return;
+
+        weak.push({
+          category_code: cat,
+          category_name: getName(cat),
+          category_level: 2,
+          curr_revenue: Math.round(currRev),
+          peer_avg_revenue: Math.round(peerAvg),
+          gap_revenue: Math.round(peerAvg - currRev),
+          ratio_pct: Math.round(ratio * 100),
+          status: existing?.status ?? 'open',
+          notes: existing?.notes ?? null,
+        });
+      });
+
+      weak.sort((a, b) => b.gap_revenue - a.gap_revenue);
+    }
+
+    res.json({
+      similar_customers: { count: similarCount },
+      out_of_scope: [...outOfScope],
+      declining,
+      missing,
+      weak,
+    });
+
+  } catch (err) {
+    console.error('Category intelligence error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
