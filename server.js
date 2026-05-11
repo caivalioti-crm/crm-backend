@@ -1049,14 +1049,13 @@ app.get('/api/customers/:code/category-intelligence', authMiddleware, async (req
 
     if (similarCount > 0) {
       const CHUNK = 50;
-      for (let i = 0; i < similarCodes.length; i += CHUNK) {
-        const chunk = similarCodes.slice(i, i + CHUNK);
+      for (const chunk of chunks) {
         const { data: peerRaw } = await supabase
-          .from('vw_crm_customer_category_sales')
-          .select('customer_code, l1_code, l2_code, netamnt')
-          .in('customer_code', chunk)
-          .gte('trndate', from)
-          .lte('trndate', to);
+          .rpc('get_peer_category_sales_intel', {
+            p_customer_codes: chunk,
+            p_from: from,
+            p_to: to,
+          });
 
         (peerRaw ?? []).forEach(r => {
           if (r.l1_code) {
