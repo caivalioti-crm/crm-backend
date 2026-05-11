@@ -748,6 +748,50 @@ app.post('/api/prospects/:id/visits', authMiddleware, upload.single('voice_memo'
   res.json(visit);
 });
 
+// Prospect visit voice memo
+app.get('/api/prospect-visits/:id/voice-memo', authMiddleware, async (req, res) => {
+  const { data: visit, error } = await supabase
+    .from('crm_prospect_visits')
+    .select('voice_memo_path')
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !visit?.voice_memo_path) {
+    return res.status(404).json({ error: 'No voice memo found' });
+  }
+
+  const { data, error: urlError } = await supabase.storage
+    .from('voice-memos')
+    .createSignedUrl(visit.voice_memo_path, 3600);
+
+  if (urlError) return res.status(500).json({ error: urlError.message });
+
+  res.json({ url: data.signedUrl });
+});
+
+// Edit prospect visit
+app.patch('/api/prospect-visits/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { notes, visit_type, visit_date } = req.body;
+
+  const { error } = await supabase
+    .from('crm_prospect_visits')
+    .update({ notes, visit_type, visit_date })
+    .eq('id', id)
+    .eq('user_id', req.user.id);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const { data: updated, error: fetchErr } = await supabase
+    .from('crm_prospect_visits')
+    .select(`*, crm_prospect_visit_categories(*)`)
+    .eq('id', id)
+    .single();
+
+  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+  res.json(updated);
+});
+
 // VAT check
 app.get('/api/vat-check/:vat', authMiddleware, async (req, res) => {
   const { vat } = req.params;
