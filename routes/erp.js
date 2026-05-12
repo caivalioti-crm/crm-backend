@@ -839,7 +839,7 @@ router.get('/customers/:code/sales-by-branch', async (req, res) => {
 const customerData = customerDatas?.[0];
 if (!customerData) return res.status(404).json({ error: 'Not found' });
 
-    const fetchPeriod = async (dateFrom, dateTo) => {
+  const fetchPeriod = async (dateFrom, dateTo) => {
   const { data, error } = await supabase
     .from('stg_soft1_findoc')
     .select('findoc, trdbranch, series')
@@ -847,18 +847,24 @@ if (!customerData) return res.status(404).json({ error: 'Not found' });
     .eq('trdr', String(customerData.trdr_id))
     .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
     .gte('trndate', dateFrom)
-    .lt('trndate', dateTo);
+    .lt('trndate', dateTo)
+    .limit(10000);
   if (error) throw error;
 
   const findocIds = (data ?? []).map(r => r.findoc);
   let netamntMap = new Map();
   if (findocIds.length > 0) {
-    const { data: netamnts } = await supabase
-      .from('stg_soft1_findoc_netamnt')
-      .select('findoc, netamnt')
-      .in('findoc', findocIds)
-      .eq('company', 1000);
-    netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
+    const BATCH = 100;
+    let allNetamnts = [];
+    for (let i = 0; i < findocIds.length; i += BATCH) {
+      const { data: batch } = await supabase
+        .from('stg_soft1_findoc_netamnt')
+        .select('findoc, netamnt')
+        .in('findoc', findocIds.slice(i, i + BATCH))
+        .eq('company', 1000);
+      allNetamnts = allNetamnts.concat(batch ?? []);
+    }
+    netamntMap = new Map(allNetamnts.map(n => [n.findoc, Number(n.netamnt ?? 0)]));
   }
 
   const map = {};
