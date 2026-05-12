@@ -54,13 +54,19 @@ async function fetchCustomerFindocs(trdrId, series, from, to) {
   if (error || !findocs || findocs.length === 0) return { findocs: [], netamntMap: new Map() };
 
   const findocIds = findocs.map(f => f.findoc);
-  const { data: netamnts } = await supabase
-    .from('stg_soft1_findoc_netamnt')
-    .select('findoc, netamnt')
-    .in('findoc', findocIds)
-    .eq('company', 1000);
+  const BATCH = 100;
+  let allNetamnts = [];
+  for (let i = 0; i < findocIds.length; i += BATCH) {
+    const { data: batch } = await supabase
+      .from('stg_soft1_findoc_netamnt')
+      .select('findoc, netamnt')
+      .in('findoc', findocIds.slice(i, i + BATCH))
+      .eq('company', 1000);
+    allNetamnts = allNetamnts.concat(batch ?? []);
+  }
+  const netamntMap = new Map(allNetamnts.map(n => [n.findoc, Number(n.netamnt ?? 0)]));
 
-  const netamntMap = new Map((netamnts ?? []).map(n => [n.findoc, Number(n.netamnt ?? 0)]));
+  
   return { findocs, netamntMap };
 }
 
