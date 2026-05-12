@@ -895,6 +895,177 @@ router.get('/customers/:code/sales-by-branch', async (req, res) => {
   }
 });
 
+router.get('/customers/:code/summary', async (req, res) => {
+  try {
+    const { code } = req.params;
 
+    // 1. Resolve trdr_id once
+    const { data: customers } = await supabase
+      .from('stg_soft1_trdr')
+      .select('trdr_id, prccategory')
+      .eq('trdr_code', code)
+      .eq('company', 1000)
+      .limit(1);
+
+    const customer = customers?.[0];
+    if (!customer) return res.json({ error: 'Not found' });
+
+    const trdrId = customer.trdr_id;
+
+    // 2. Fire everything in parallel
+    const [
+      salesResult,
+      balanceResult,
+      discountResult,
+      visitsResult,
+      categoriesResult,
+      profileResult,
+      lastSyncResult,
+      lastInvoiceResult,
+    ] = await Promise.allSettled([
+
+      // Sales monthly 2023–2026
+      (async () => {
+        const { findocs, netamntMap } = await fetchCustomerFindocs(
+          trdrId, [...INVOICE_SERIES, ...CREDIT_SERIES], '2023-01-01', '2026-12-31'
+        );
+        if (!findocs.length) return [];
+        const invoiceFindocIds = findocs.filter(r => INVOICE_SERIES.includes(r.series)).map(r => r.findoc);
+        let qtyByFindoc = new Map();
+        if (invoiceFindocIds.length > 0) {
+          const { data: lines } = await supabase
+            .from('stg_soft1_mtrlines')
+            .select('findoc, qty')
+            .eq('company', 1000)
+            .in('findoc', invoiceFindocIds);
+          for (const line of lines ?? []) {
+            qtyByFindoc.set(line.findoc, (qtyByFindoc.get(line.findoc) ?? 0) + Number(line.qty ?? 0));
+          }
+        }
+        const byMonth = {};
+        findocs.forEach(row => {
+          const month = (row.trndate ?? '').slice(0, 7);
+          if (!month) return;
+          const amount = netamntMap.get(row.findoc) ?? 0;
+          const isCreditNote = CREDIT_SERIES.includes(row.series);
+          if (!byMonth[month]) byMonth[month] = { netamnt: 0, qty: 0 };
+          byMonth[month].netamnt += isCreditNote ? -amount : amount;
+          if (!isCreditNote) byMonth[month].qty += qtyByFindoc.get(row.findoc) ?? 0;
+        });
+        return Object.entries(byMonth)
+          .map(([month, data]) => ({ month, netamnt: data.netamnt, qty: Math.round(data.qty) }))
+          .sort((a, b) => b.month.localeCompare(a.month));
+      })(),
+
+      // Balance
+      (async () => {
+        const { data: balData } = await supabase
+          .from('stg_soft1_custbalance')
+          .select('debit, credit')
+          .eq('cuscode', trdrId)
+          .eq('company', 1000);
+        const balance = Math.round(
+          (balData ?? []).reduce((sum, row) => sum + Number(row.debit ?? 0) - Number(row.credit ?? 0), 0) * 100
+        ) / 100;
+        const { data: entries } = await supabase
+          .from('stg_soft1_custbalance')
+          .select('trndate, fincode, seira, debit, credit')
+          .eq('cuscode', trdrId)
+          .eq('company', 1000)
+          .order('trndate', { ascending: false })
+          .limit(10);
+        return { balance, entries: entries ?? [] };
+      })(),
+
+      // Discounts
+      (async () => {
+        const { data: policies } = await supabase
+          .from('stg_soft1_ccctimologiakestrdr')
+          .select('prcrule, catname, mtrcategory, fld01')
+          .eq('trdr', trdrId);
+        const general = policies?.find(p => p.prcrule === 101);
+        const categories = (policies ?? [])
+          .filter(p => p.prcrule === 302 && p.fld01 > 0)
+          .map(p => ({ category: p.catname, mtrcategory: p.mtrcategory, discount: p.fld01 }))
+          .sort((a, b) => b.discount - a.discount);
+        const brands = (policies ?? [])
+          .filter(p => p.prcrule === 502 && p.fld01 > 0)
+          .map(p => ({ brand: p.catname, mtrcategory: p.mtrcategory, discount: p.fld01 }))
+          .sort((a, b) => b.discount - a.discount);
+        return { general: general ? general.fld01 : null, categories, brands, prccategory: customer.prccategory };
+      })(),
+
+      // Visits
+      (async () => {
+        const { data } = await supabase
+          .from('crm_visits')
+          .select('*')
+          .eq('customer_code', code)
+          .order('visit_date', { ascending: false });
+        return data ?? [];
+      })(),
+
+      // Categories discussed
+      (async () => {
+        const { data } = await supabase
+          .from('crm_customer_category_scope')
+          .select('*')
+          .eq('customer_code', code);
+        return data ?? [];
+      })(),
+
+      // Entity profile
+      (async () => {
+        const { data } = await supabase
+          .from('crm_entity_profiles')
+          .select('*')
+          .eq('entity_type', 'customer')
+          .eq('entity_id', code)
+          .limit(1);
+        return data?.[0] ?? null;
+      })(),
+
+      // Last sync date
+      (async () => {
+        const { data } = await supabase
+          .from('stg_soft1_findoc')
+          .select('trndate')
+          .eq('company', 1000)
+          .order('trndate', { ascending: false })
+          .limit(1)
+          .single();
+        return data?.trndate?.slice(0, 10) ?? null;
+      })(),
+
+      // Last invoice date
+      (async () => {
+        const { data } = await supabase
+          .from('stg_soft1_findoc')
+          .select('trndate')
+          .eq('company', 1000)
+          .in('series', [7061, 7062, 7080, 7063, 7064, 9962])
+          .order('trndate', { ascending: false })
+          .limit(1)
+          .single();
+        return data?.trndate?.slice(0, 10) ?? null;
+      })(),
+    ]);
+
+    res.json({
+      sales:          salesResult.status === 'fulfilled'        ? salesResult.value        : [],
+      balance:        balanceResult.status === 'fulfilled'      ? balanceResult.value      : null,
+      discounts:      discountResult.status === 'fulfilled'     ? discountResult.value     : null,
+      visits:         visitsResult.status === 'fulfilled'       ? visitsResult.value       : [],
+      categories:     categoriesResult.status === 'fulfilled'   ? categoriesResult.value   : [],
+      profile:        profileResult.status === 'fulfilled'      ? profileResult.value      : null,
+      lastSyncDate:   lastSyncResult.status === 'fulfilled'     ? lastSyncResult.value     : null,
+      lastInvoiceDate:lastInvoiceResult.status === 'fulfilled'  ? lastInvoiceResult.value  : null,
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;
