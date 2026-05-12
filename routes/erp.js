@@ -1050,8 +1050,6 @@ router.get('/customers/:code/summary', async (req, res) => {
       })(),
     ]);
 
-    console.log('salesResult:', salesResult.status, salesResult.reason?.message ?? '');
-console.log('balanceResult:', balanceResult.status, balanceResult.reason?.message ?? '');
 
     res.json({
       sales:          salesResult.status === 'fulfilled'        ? salesResult.value        : [],
