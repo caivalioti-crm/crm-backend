@@ -927,7 +927,8 @@ router.get('/customers/:code/summary', async (req, res) => {
       lastSyncResult,
       lastInvoiceResult,
     ] = await Promise.allSettled([
-
+      
+  
       // Sales monthly 2023–2026
       (async () => {
         const { findocs, netamntMap } = await fetchCustomerFindocs(
@@ -961,6 +962,7 @@ router.get('/customers/:code/summary', async (req, res) => {
           .sort((a, b) => b.month.localeCompare(a.month));
       })(),
 
+      
       // Balance
       (async () => {
         const { data: balData } = await supabase
@@ -1054,6 +1056,9 @@ router.get('/customers/:code/summary', async (req, res) => {
         return data?.trndate?.slice(0, 10) ?? null;
       })(),
     ]);
+
+    console.log('salesResult:', salesResult.status, salesResult.reason?.message ?? '');
+console.log('balanceResult:', balanceResult.status, balanceResult.reason?.message ?? '');
 
     res.json({
       sales:          salesResult.status === 'fulfilled'        ? salesResult.value        : [],
