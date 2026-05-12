@@ -929,24 +929,12 @@ router.get('/customers/:code/summary', async (req, res) => {
     ] = await Promise.allSettled([
       
   
-      // Sales monthly 2023–2026
+      // Sales monthly 2023–2026 (no qty to avoid large .in() call)
       (async () => {
         const { findocs, netamntMap } = await fetchCustomerFindocs(
-          trdrId, [...INVOICE_SERIES, ...CREDIT_SERIES], '2023-01-01', '2026-12-31'
+          trdrId, [...INVOICE_SERIES, ...CREDIT_SERIES], '2023-01-01', '2027-01-01'
         );
         if (!findocs.length) return [];
-        const invoiceFindocIds = findocs.filter(r => INVOICE_SERIES.includes(r.series)).map(r => r.findoc);
-        let qtyByFindoc = new Map();
-        if (invoiceFindocIds.length > 0) {
-          const { data: lines } = await supabase
-            .from('stg_soft1_mtrlines')
-            .select('findoc, qty')
-            .eq('company', 1000)
-            .in('findoc', invoiceFindocIds);
-          for (const line of lines ?? []) {
-            qtyByFindoc.set(line.findoc, (qtyByFindoc.get(line.findoc) ?? 0) + Number(line.qty ?? 0));
-          }
-        }
         const byMonth = {};
         findocs.forEach(row => {
           const month = (row.trndate ?? '').slice(0, 7);
@@ -955,10 +943,9 @@ router.get('/customers/:code/summary', async (req, res) => {
           const isCreditNote = CREDIT_SERIES.includes(row.series);
           if (!byMonth[month]) byMonth[month] = { netamnt: 0, qty: 0 };
           byMonth[month].netamnt += isCreditNote ? -amount : amount;
-          if (!isCreditNote) byMonth[month].qty += qtyByFindoc.get(row.findoc) ?? 0;
         });
         return Object.entries(byMonth)
-          .map(([month, data]) => ({ month, netamnt: data.netamnt, qty: Math.round(data.qty) }))
+          .map(([month, data]) => ({ month, netamnt: data.netamnt, qty: 0 }))
           .sort((a, b) => b.month.localeCompare(a.month));
       })(),
 
