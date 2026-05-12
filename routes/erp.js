@@ -44,7 +44,8 @@ async function fetchCustomerFindocs(trdrId, series, from, to) {
     .eq('trdr', String(trdrId))
     .eq('company', 1000)
     .in('series', series)
-    .order('trndate', { ascending: false });
+    .order('trndate', { ascending: false })
+    .limit(10000);
 
   if (from) query = query.gte('trndate', from);
   if (to)   query = query.lte('trndate', to);
@@ -106,18 +107,19 @@ router.get('/customers/:code/sales', async (req, res) => {
   const { code } = req.params;
   const { from, to } = req.query;
 
-  const { data: customer } = await supabase
-    .from('stg_soft1_trdr')
-    .select('trdr_id')
-    .eq('trdr_code', code)
-    .eq('company', 1000)
-    .limit(1);
+  const { data: customers } = await supabase
+  .from('stg_soft1_trdr')
+  .select('trdr_id')
+  .eq('trdr_code', code)
+  .eq('company', 1000)
+  .limit(1);
 
-  if (!customer) return res.json([]);
+const customer = customers?.[0];
+if (!customer) return res.json([]);
 
-  const { findocs, netamntMap } = await fetchCustomerFindocs(
-    customer.trdr_id, [...INVOICE_SERIES, ...CREDIT_SERIES], from, to
-  );
+const { findocs, netamntMap } = await fetchCustomerFindocs(
+  customer.trdr_id, [...INVOICE_SERIES, ...CREDIT_SERIES], from, to
+);
   if (!findocs.length) return res.json([]);
 
   // Fetch qty from mtrlines for invoice series only
@@ -160,14 +162,15 @@ router.get('/customers/:code/documents', async (req, res) => {
   const { code } = req.params;
   const { from, to } = req.query;
 
-  const { data: customer } = await supabase
-    .from('stg_soft1_trdr')
-    .select('trdr_id')
-    .eq('trdr_code', code)
-    .eq('company', 1000)
-    .limit(1);
+  const { data: customers } = await supabase
+  .from('stg_soft1_trdr')
+  .select('trdr_id')
+  .eq('trdr_code', code)
+  .eq('company', 1000)
+  .limit(1);
 
-  if (!customer) return res.json([]);
+const customer = customers?.[0];
+if (!customer) return res.json([]);
 
   // Fetch top 10 of each type in parallel
   const [invoiceResult, orderResult, creditResult] = await Promise.all([
@@ -820,14 +823,15 @@ router.get('/customers/:code/sales-by-branch', async (req, res) => {
     const { code } = req.params;
     const { from, to, prevFrom, prevTo } = req.query;
 
-    const { data: customerData } = await supabase
-      .from('stg_soft1_trdr')
-      .select('trdr_id')
-      .eq('trdr_code', code)
-      .eq('company', 1000)
-      .limit(1);
+    const { data: customerDatas } = await supabase
+  .from('stg_soft1_trdr')
+  .select('trdr_id')
+  .eq('trdr_code', code)
+  .eq('company', 1000)
+  .limit(1);
 
-    if (!customerData) return res.status(404).json({ error: 'Not found' });
+const customerData = customerDatas?.[0];
+if (!customerData) return res.status(404).json({ error: 'Not found' });
 
     const fetchPeriod = async (dateFrom, dateTo) => {
   const { data, error } = await supabase
