@@ -111,7 +111,7 @@ router.get('/customers/:code/sales', async (req, res) => {
     .select('trdr_id')
     .eq('trdr_code', code)
     .eq('company', 1000)
-    .single();
+    .limit(1);
 
   if (!customer) return res.json([]);
 
@@ -165,7 +165,7 @@ router.get('/customers/:code/documents', async (req, res) => {
     .select('trdr_id')
     .eq('trdr_code', code)
     .eq('company', 1000)
-    .single();
+    .limit(1);
 
   if (!customer) return res.json([]);
 
@@ -825,7 +825,7 @@ router.get('/customers/:code/sales-by-branch', async (req, res) => {
       .select('trdr_id')
       .eq('trdr_code', code)
       .eq('company', 1000)
-      .single();
+      .limit(1);
 
     if (!customerData) return res.status(404).json({ error: 'Not found' });
 
