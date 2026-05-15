@@ -91,6 +91,8 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
       visit_type: visit_type || 'in-person',
       notes: notes || '',
       voice_memo_path,
+      shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? shop_profile : null,
+      competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? competition_info : null,
     })
     .select()
     .single();
@@ -496,7 +498,7 @@ app.post('/api/prospects', authMiddleware, async (req, res) => {
   if (!business_name?.trim()) return res.status(400).json({ error: 'Business name is required' });
 
   
-  const { data: prospect, error } = await supabase
+const { data: prospect, error } = await supabase
     .from('crm_prospects')
     .insert({
       business_name: business_name.trim(),
@@ -690,9 +692,11 @@ app.post('/api/prospects/:id/visits', authMiddleware, upload.single('voice_memo'
       notes: notes || '',
       outcome: 'interested',
       voice_memo_path,
-    })
-    .select()
-    .single();
+    shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? shop_profile : null,
+    competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? competition_info : null,
+  })
+  .select()
+  .single();
 
   if (error) return res.status(500).json({ error: error.message });
 
