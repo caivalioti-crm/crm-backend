@@ -1342,6 +1342,59 @@ app.get('/api/customers/:code/category-intelligence', authMiddleware, async (req
   }
 });
 
+// Similar customers drill-down
+app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, res) => {
+  try {
+    const { code } = req.params;
+    const { from, to } = req.query;
+
+    const { data: similar, error } = await supabase.rpc('get_similar_customers', {
+      p_customer_code: code,
+    });
+    if (error) throw error;
+    if (!similar?.length) return res.json([]);
+
+    const codes = similar.map(s => s.similar_code);
+
+    const { data: customers } = await supabase
+      .from('vw_crm_customers')
+      .select('trdr_code, name, city, area')
+      .in('trdr_code', codes);
+
+    const custMap = new Map((customers ?? []).map(c => [c.trdr_code, c]));
+
+    const { data: sales } = await supabase
+      .from('vw_crm_sales')
+      .select('customer_code, netamnt')
+      .in('customer_code', codes)
+      .gte('trndate', from || '2026-01-01')
+      .lte('trndate', to || new Date().toISOString().split('T')[0]);
+
+    const salesMap = new Map();
+    for (const s of sales ?? []) {
+      salesMap.set(s.customer_code, (salesMap.get(s.customer_code) ?? 0) + Number(s.netamnt ?? 0));
+    }
+
+    const result = similar.map(s => {
+      const cust = custMap.get(s.similar_code) ?? {};
+      return {
+        code: s.similar_code,
+        name: cust.name ?? s.similar_code,
+        city: cust.city ?? '',
+        area: cust.area ?? '',
+        l1_overlap: Math.round(s.l1_overlap * 100),
+        l2_overlap: Math.round(s.l2_overlap * 100),
+        revenue: Math.round(salesMap.get(s.similar_code) ?? 0),
+      };
+    }).sort((a, b) => b.l2_overlap - a.l2_overlap);
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
