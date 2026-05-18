@@ -1359,10 +1359,10 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
     // Get customer names/cities
     const { data: customers } = await supabase
       .from('vw_crm_customers')
-      .select('trdr_code, name, city, area')
-      .in('trdr_code', codes);
+      .select('trdr_id, name, city, area')
+      .in('trdr_id', codes);
 
-    const custMap = new Map((customers ?? []).map(c => [c.trdr_code, c]));
+    const custMap = new Map((customers ?? []).map(c => [String(c.trdr_id), c]));
 
     // Get sales for period
     const { data: sales } = await supabase
