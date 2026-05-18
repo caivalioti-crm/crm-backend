@@ -91,8 +91,19 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
       visit_type: visit_type || 'in-person',
       notes: notes || '',
       voice_memo_path,
-      shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? shop_profile : null,
-      competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? competition_info : null,
+      shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? {
+      shop_type: shop_profile.shop_type || null,
+      number_of_employees: shop_profile.numberOfEmployees ?? null,
+      shop_size_m2: shop_profile.shopSizeM2 ?? null,
+      stock_behavior: shop_profile.stockBehavior || null,
+    } : null,
+    competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? {
+      main_competitor: competition_info.mainCompetitor || null,
+      other_competitors: competition_info.otherCompetitors || null,
+      estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
+      competitor_strengths: competition_info.competitorStrengths || null,
+      switch_reason: competition_info.switchReason || null,
+    } : null,
     })
     .select()
     .single();
@@ -692,8 +703,19 @@ app.post('/api/prospects/:id/visits', authMiddleware, upload.single('voice_memo'
       notes: notes || '',
       outcome: 'interested',
       voice_memo_path,
-    shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? shop_profile : null,
-    competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? competition_info : null,
+    shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? {
+    shop_type: shop_profile.shop_type || null,
+    number_of_employees: shop_profile.numberOfEmployees ?? null,
+    shop_size_m2: shop_profile.shopSizeM2 ?? null,
+    stock_behavior: shop_profile.stockBehavior || null,
+  } : null,
+  competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? {
+    main_competitor: competition_info.mainCompetitor || null,
+    other_competitors: competition_info.otherCompetitors || null,
+    estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
+    competitor_strengths: competition_info.competitorStrengths || null,
+    switch_reason: competition_info.switchReason || null,
+  } : null,
   })
   .select()
   .single();
