@@ -967,7 +967,7 @@ router.get('/customers/:code/summary', async (req, res) => {
         const { data: balData } = await supabase
           .from('stg_soft1_custbalance')
           .select('debit, credit')
-          .eq('cuscode', trdrId)
+          .eq('cuscode', parseInt(code))   // ← was: trdrId
           .eq('company', 1000);
         const balance = Math.round(
           (balData ?? []).reduce((sum, row) => sum + Number(row.debit ?? 0) - Number(row.credit ?? 0), 0) * 100
@@ -975,7 +975,7 @@ router.get('/customers/:code/summary', async (req, res) => {
         const { data: entries } = await supabase
           .from('stg_soft1_custbalance')
           .select('trndate, fincode, seira, debit, credit')
-          .eq('cuscode', trdrId)
+          .eq('cuscode', parseInt(code))   // ← was: trdrId
           .eq('company', 1000)
           .order('trndate', { ascending: false })
           .limit(10);
