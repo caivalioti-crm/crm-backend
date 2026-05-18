@@ -1028,13 +1028,28 @@ router.get('/customers/:code/summary', async (req, res) => {
 
       // Entity profile
       (async () => {
-        const { data } = await supabase
-          .from('crm_entity_profiles')
-          .select('*')
-          .eq('entity_type', 'customer')
-          .eq('entity_id', code)
-          .limit(1);
-        return data?.[0] ?? null;
+        const [{ data: sp }, { data: ci }] = await Promise.all([
+          supabase.from('crm_entity_shop_profile').select('*').eq('entity_type', 'customer').eq('entity_id', code).limit(1),
+          supabase.from('crm_entity_competitor_info').select('*').eq('entity_type', 'customer').eq('entity_id', code).limit(1),
+        ]);
+        const shopProfile = sp?.[0] ?? null;
+        const competitorInfo = ci?.[0] ?? null;
+        if (!shopProfile && !competitorInfo) return null;
+        return {
+          shop_profile: shopProfile ? {
+            shop_type: shopProfile.shop_type,
+            number_of_employees: shopProfile.number_of_employees,
+            shop_size_m2: shopProfile.shop_size_m2,
+            stock_behavior: shopProfile.stock_behavior,
+          } : null,
+          competitor_info: competitorInfo ? {
+            main_competitor: competitorInfo.main_competitor,
+            other_competitors: competitorInfo.other_competitors,
+            estimated_monthly_spend: competitorInfo.estimated_monthly_spend,
+            competitor_strengths: competitorInfo.competitor_strengths,
+            switch_reason: competitorInfo.switch_reason,
+          } : null,
+        };
       })(),
 
       // Last sync date
