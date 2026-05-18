@@ -169,30 +169,37 @@ router.get('/customers/:code/documents', async (req, res) => {
   const { from, to } = req.query;
 
   const { data: customers } = await supabase
-  .from('stg_soft1_trdr')
-  .select('trdr_id')
-  .eq('trdr_code', code)
-  .eq('company', 1000)
-  .limit(1);
+    .from('stg_soft1_trdr')
+    .select('trdr_id')
+    .eq('trdr_code', code)
+    .eq('company', 1000)
+    .limit(1);
 
-const customer = customers?.[0];
-if (!customer) return res.json([]);
+  const customer = customers?.[0];
+  if (!customer) return res.json([]);
 
-  // Fetch top 10 of each type in parallel
   const [invoiceResult, orderResult, creditResult] = await Promise.all([
     fetchCustomerFindocs(customer.trdr_id, [7061, 7062, 7080], from, to),
     fetchCustomerFindocs(customer.trdr_id, ORDER_SERIES, from, to),
     fetchCustomerFindocs(customer.trdr_id, CREDIT_SERIES, from, to),
   ]);
 
-  const invoiceDocs = invoiceResult.findocs.slice(0, 10).map(r => mapDoc(r, invoiceResult.netamntMap));
-  const orderDocs   = orderResult.findocs.slice(0, 10).map(r => mapDoc(r, orderResult.netamntMap));
-  const creditDocs  = creditResult.findocs.slice(0, 10).map(r => mapDoc(r, creditResult.netamntMap));
+  // ← counts BEFORE slicing
+  const counts = {
+    invoice: invoiceResult.findocs.length,
+    order:   orderResult.findocs.length,
+    credit:  creditResult.findocs.length,
+  };
+
+const invoiceDocs = invoiceResult.findocs.map(r => mapDoc(r, invoiceResult.netamntMap));
+const orderDocs   = orderResult.findocs.map(r => mapDoc(r, orderResult.netamntMap));
+const creditDocs  = creditResult.findocs.map(r => mapDoc(r, creditResult.netamntMap));
 
   const result = [...invoiceDocs, ...orderDocs, ...creditDocs]
     .sort((a, b) => b.trndate.localeCompare(a.trndate));
 
-  res.json(result);
+  // ← return as object with counts + docs
+  res.json({ docs: result, counts });
 });
 
 // Customer balance
