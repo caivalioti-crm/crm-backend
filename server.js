@@ -1356,6 +1356,7 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
 
     const codes = similar.map(s => s.similar_code);
 
+    // Get customer names/cities
     const { data: customers } = await supabase
       .from('vw_crm_customers')
       .select('trdr_code, name, city, area')
@@ -1363,6 +1364,7 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
 
     const custMap = new Map((customers ?? []).map(c => [c.trdr_code, c]));
 
+    // Get sales for period
     const { data: sales } = await supabase
       .from('vw_crm_sales')
       .select('customer_code, netamnt')
@@ -1375,8 +1377,46 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
       salesMap.set(s.customer_code, (salesMap.get(s.customer_code) ?? 0) + Number(s.netamnt ?? 0));
     }
 
+    // Get L1 categories for this customer
+    const { data: myCats } = await supabase
+      .from('vw_crm_customer_category_sales')
+      .select('l1_code')
+      .eq('customer_code', code)
+      .gte('trndate', from || '2026-01-01')
+      .lte('trndate', to || new Date().toISOString().split('T')[0]);
+
+    const myL1s = new Set((myCats ?? []).map(r => r.l1_code).filter(Boolean));
+
+    // Get L1 categories for each similar customer
+    const { data: peerCats } = await supabase
+      .from('vw_crm_customer_category_sales')
+      .select('customer_code, l1_code')
+      .in('customer_code', codes)
+      .gte('trndate', from || '2026-01-01')
+      .lte('trndate', to || new Date().toISOString().split('T')[0]);
+
+    const peerCatMap = new Map();
+    for (const r of peerCats ?? []) {
+      if (!r.l1_code) continue;
+      if (!peerCatMap.has(r.customer_code)) peerCatMap.set(r.customer_code, new Set());
+      peerCatMap.get(r.customer_code).add(r.l1_code);
+    }
+
+    // Get category names
+    const allL1s = new Set([...myL1s, ...[...peerCatMap.values()].flatMap(s => [...s])]);
+    const { data: masters } = await supabase
+      .from('crm_category_master')
+      .select('category_code, short_name, full_name')
+      .in('category_code', [...allL1s])
+      .eq('level', 1);
+
+    const masterMap = new Map((masters ?? []).map(m => [m.category_code, m.short_name ?? m.full_name ?? m.category_code]));
+
     const result = similar.map(s => {
       const cust = custMap.get(s.similar_code) ?? {};
+      const peerL1s = peerCatMap.get(s.similar_code) ?? new Set();
+      const shared = [...peerL1s].filter(c => myL1s.has(c)).map(c => masterMap.get(c) ?? c);
+      const onlyPeer = [...peerL1s].filter(c => !myL1s.has(c)).map(c => masterMap.get(c) ?? c);
       return {
         code: s.similar_code,
         name: cust.name ?? s.similar_code,
@@ -1385,6 +1425,8 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
         l1_overlap: Math.round(s.l1_overlap * 100),
         l2_overlap: Math.round(s.l2_overlap * 100),
         revenue: Math.round(salesMap.get(s.similar_code) ?? 0),
+        shared_categories: shared,
+        only_peer_categories: onlyPeer,
       };
     }).sort((a, b) => b.l2_overlap - a.l2_overlap);
 
