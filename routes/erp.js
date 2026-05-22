@@ -925,7 +925,7 @@ router.get('/customers/:code/summary', async (req, res) => {
     // 1. Resolve trdr_id once
     const { data: customers } = await supabase
       .from('stg_soft1_trdr')
-      .select('trdr_id, prccategory')
+      .select('trdr_id, prccategory, payment, warning')
       .eq('trdr_code', code)
       .eq('company', 1000)
       .limit(1);
@@ -1080,15 +1080,17 @@ router.get('/customers/:code/summary', async (req, res) => {
 
 
     res.json({
-      sales:          salesResult.status === 'fulfilled'        ? salesResult.value        : [],
-      balance:        balanceResult.status === 'fulfilled'      ? balanceResult.value      : null,
-      discounts:      discountResult.status === 'fulfilled'     ? discountResult.value     : null,
-      visits:         visitsResult.status === 'fulfilled'       ? visitsResult.value       : [],
-      categories:     categoriesResult.status === 'fulfilled'   ? categoriesResult.value   : [],
-      profile:        profileResult.status === 'fulfilled'      ? profileResult.value      : null,
-      lastSyncDate:   lastSyncResult.status === 'fulfilled'     ? lastSyncResult.value     : null,
-      lastInvoiceDate:lastInvoiceResult.status === 'fulfilled'  ? lastInvoiceResult.value  : null,
-    });
+    sales:           salesResult.status === 'fulfilled'        ? salesResult.value        : [],
+    balance:         balanceResult.status === 'fulfilled'      ? balanceResult.value      : null,
+    discounts:       discountResult.status === 'fulfilled'     ? discountResult.value     : null,
+    visits:          visitsResult.status === 'fulfilled'       ? visitsResult.value       : [],
+    categories:      categoriesResult.status === 'fulfilled'   ? categoriesResult.value   : [],
+    profile:         profileResult.status === 'fulfilled'      ? profileResult.value      : null,
+    lastSyncDate:    lastSyncResult.status === 'fulfilled'     ? lastSyncResult.value     : null,
+    lastInvoiceDate: lastInvoiceResult.status === 'fulfilled'  ? lastInvoiceResult.value  : null,
+    payment:         customer.payment  ?? null,
+    warning:         customer.warning  ?? null,
+  });
 
   } catch (err) {
     console.error(err);
