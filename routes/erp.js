@@ -948,25 +948,47 @@ router.get('/customers/:code/summary', async (req, res) => {
     ] = await Promise.allSettled([
       
   
-      // Sales monthly 2023–2026 (no qty to avoid large .in() call)
       (async () => {
-        const { findocs, netamntMap } = await fetchCustomerFindocs(
-          trdrId, [...INVOICE_SERIES, ...CREDIT_SERIES], '2023-01-01', '2027-01-01'
-        );
-        if (!findocs.length) return [];
-        const byMonth = {};
-        findocs.forEach(row => {
-          const month = (row.trndate ?? '').slice(0, 7);
-          if (!month) return;
-          const amount = netamntMap.get(row.findoc) ?? 0;
-          const isCreditNote = CREDIT_SERIES.includes(row.series);
-          if (!byMonth[month]) byMonth[month] = { netamnt: 0, qty: 0 };
-          byMonth[month].netamnt += isCreditNote ? -amount : amount;
-        });
-        return Object.entries(byMonth)
-          .map(([month, data]) => ({ month, netamnt: data.netamnt, qty: 0 }))
-          .sort((a, b) => b.month.localeCompare(a.month));
-      })(),
+  const { findocs, netamntMap } = await fetchCustomerFindocs(
+    trdrId, [...INVOICE_SERIES, ...CREDIT_SERIES], '2023-01-01', '2027-01-01'
+  );
+  if (!findocs.length) return [];
+
+  // Fetch qty from mtrlines for invoice findocs only
+      const invoiceFindocIds = findocs
+        .filter(r => INVOICE_SERIES.includes(r.series))
+        .map(r => r.findoc);
+
+      const qtyByFindoc = new Map();
+      if (invoiceFindocIds.length > 0) {
+        const BATCH = 100;
+        for (let i = 0; i < invoiceFindocIds.length; i += BATCH) {
+          const { data: lines } = await supabase
+            .from('stg_soft1_mtrlines')
+            .select('findoc, qty')
+            .eq('company', 1000)
+            .in('findoc', invoiceFindocIds.slice(i, i + BATCH));
+          for (const line of lines ?? []) {
+            qtyByFindoc.set(line.findoc, (qtyByFindoc.get(line.findoc) ?? 0) + Number(line.qty ?? 0));
+          }
+        }
+      }
+
+      const byMonth = {};
+      findocs.forEach(row => {
+        const month = (row.trndate ?? '').slice(0, 7);
+        if (!month) return;
+        const amount = netamntMap.get(row.findoc) ?? 0;
+        const isCreditNote = CREDIT_SERIES.includes(row.series);
+        if (!byMonth[month]) byMonth[month] = { netamnt: 0, qty: 0 };
+        byMonth[month].netamnt += isCreditNote ? -amount : amount;
+        if (!isCreditNote) byMonth[month].qty += qtyByFindoc.get(row.findoc) ?? 0;
+      });
+
+      return Object.entries(byMonth)
+        .map(([month, data]) => ({ month, netamnt: data.netamnt, qty: Math.round(data.qty) }))
+        .sort((a, b) => b.month.localeCompare(a.month));
+    })(),
 
       
       // Balance
