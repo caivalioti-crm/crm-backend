@@ -1444,6 +1444,98 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
   }
 });
 
+// GET /api/tasks/due — due and overdue tasks for current user
+app.get('/api/tasks/due', authMiddleware, async (req, res) => {
+  try {
+    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+    const today = new Date().toISOString().split('T')[0];
+
+    let visitsQuery = supabase
+      .from('crm_visits')
+      .select('id, customer_code, visit_date, notes');
+
+    if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+      visitsQuery = visitsQuery.eq('salesman_code', req.user.salesman_code);
+    }
+
+    const { data: visits, error: visitsError } = await visitsQuery;
+    if (visitsError) throw visitsError;
+
+    const visitIds = (visits ?? []).map(v => v.id);
+    if (visitIds.length === 0) return res.json({ today: [], overdue: [] });
+
+    const { data: tasks, error: tasksError } = await supabase
+      .from('crm_visit_tasks')
+      .select('id, visit_id, description, reminder_date, status')
+      .in('visit_id', visitIds)
+      .not('status', 'eq', 'completed')
+      .not('reminder_date', 'is', null)
+      .lte('reminder_date', today);
+
+    if (tasksError) throw tasksError;
+
+    const visitMap = new Map((visits ?? []).map(v => [v.id, v]));
+
+    const enriched = (tasks ?? []).map(t => ({
+      ...t,
+      visit: visitMap.get(t.visit_id) ?? null,
+      is_overdue: t.reminder_date < today,
+    }));
+
+    res.json({
+      today: enriched.filter(t => t.reminder_date === today),
+      overdue: enriched.filter(t => t.reminder_date < today),
+      total: enriched.length,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/comments/unread — unread comment count for current user
+app.get('/api/comments/unread', authMiddleware, async (req, res) => {
+  try {
+    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+    const isManager = FULL_ACCESS_ROLES.includes(req.user.role);
+
+    let visitsQuery = supabase
+      .from('crm_visits')
+      .select('id');
+
+    if (!isManager) {
+      visitsQuery = visitsQuery.eq('salesman_code', req.user.salesman_code);
+    }
+
+    const { data: visits } = await visitsQuery;
+    const visitIds = (visits ?? []).map(v => v.id);
+    if (visitIds.length === 0) return res.json({ count: 0 });
+
+    // Reps see unread manager comments on their visits
+    // Managers see unread rep replies on their comments
+    const { data: comments } = await supabase
+      .from('crm_visit_comments')
+      .select('id, visit_id, user_id, is_read, reply_text, reply_at')
+      .in('visit_id', visitIds)
+      .eq('is_read', false);
+
+    let unreadCount = 0;
+    if (isManager) {
+      // Managers: count unread comments where they are NOT the commenter (rep replies count as read separately)
+      // For now count all unread on their visible visits
+      unreadCount = (comments ?? []).filter(c => c.user_id !== req.user.id).length;
+    } else {
+      // Reps: count unread comments from managers on their visits
+      unreadCount = (comments ?? []).filter(c => c.user_id !== req.user.id).length;
+    }
+
+    res.json({ count: unreadCount });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
