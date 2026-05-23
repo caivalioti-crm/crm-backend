@@ -96,12 +96,12 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
       number_of_employees: shop_profile.numberOfEmployees ?? null,
       shop_size_m2: shop_profile.shopSizeM2 ?? null,
       stock_behavior: shop_profile.stockBehavior || null,
+      vehicle_types: shop_profile.vehicleTypes ?? [],
+      vehicle_brands: shop_profile.vehicleBrands ?? [],
     } : null,
     competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? {
-      main_competitor: competition_info.mainCompetitor || null,
-      other_competitors: competition_info.otherCompetitors || null,
+      competitors_v2: competition_info.competitors ?? [],
       estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
-      competitor_strengths: competition_info.competitorStrengths || null,
       switch_reason: competition_info.switchReason || null,
     } : null,
     })
@@ -147,27 +147,27 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
   // Upsert shop profile + competition info
   if (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) {
     await supabase.from('crm_entity_shop_profile').upsert({
-      entity_type: 'customer',
-      entity_id: customer_code,
-      shop_type: shop_profile.shop_type || null,
-      number_of_employees: shop_profile.numberOfEmployees ?? null,
-      shop_size_m2: shop_profile.shopSizeM2 ?? null,
-      stock_behavior: shop_profile.stockBehavior || null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'entity_type,entity_id' });
+    entity_type: 'customer',
+    entity_id: customer_code,
+    shop_type: shop_profile.shop_type || null,
+    number_of_employees: shop_profile.numberOfEmployees ?? null,
+    shop_size_m2: shop_profile.shopSizeM2 ?? null,
+    stock_behavior: shop_profile.stockBehavior || null,
+    vehicle_types: shop_profile.vehicleTypes ?? [],
+    vehicle_brands: shop_profile.vehicleBrands ?? [],
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'entity_type,entity_id' });
   }
 
   if (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) {
     await supabase.from('crm_entity_competitor_info').upsert({
-      entity_type: 'customer',
-      entity_id: customer_code,
-      main_competitor: competition_info.mainCompetitor || null,
-      other_competitors: competition_info.otherCompetitors || null,
-      estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
-      competitor_strengths: competition_info.competitorStrengths || null,
-      switch_reason: competition_info.switchReason || null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'entity_type,entity_id' });
+    entity_type: 'customer',
+    entity_id: customer_code,
+    competitors_v2: competition_info.competitors ?? [],
+    estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
+    switch_reason: competition_info.switchReason || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'entity_type,entity_id' });
   }
 
   res.json({ success: true, visit });
@@ -641,7 +641,9 @@ app.post('/api/entity-profile/:type/:id', authMiddleware, async (req, res) => {
     await supabase.from('crm_entity_competitor_info').upsert({
       entity_type: type,
       entity_id: id,
-      ...competitor_info,
+      competitors_v2: competitor_info.competitors_v2 ?? [],
+      estimated_monthly_spend: competitor_info.estimated_monthly_spend ?? null,
+      switch_reason: competitor_info.switch_reason ?? null,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'entity_type,entity_id' });
   }
@@ -650,7 +652,12 @@ app.post('/api/entity-profile/:type/:id', authMiddleware, async (req, res) => {
     await supabase.from('crm_entity_shop_profile').upsert({
       entity_type: type,
       entity_id: id,
-      ...shop_profile,
+      shop_type: shop_profile.shop_type ?? null,
+      number_of_employees: shop_profile.number_of_employees ?? null,
+      shop_size_m2: shop_profile.shop_size_m2 ?? null,
+      stock_behavior: shop_profile.stock_behavior ?? null,
+      vehicle_types: shop_profile.vehicle_types ?? [],
+      vehicle_brands: shop_profile.vehicle_brands ?? [],
       updated_at: new Date().toISOString(),
     }, { onConflict: 'entity_type,entity_id' });
   }
@@ -708,12 +715,12 @@ app.post('/api/prospects/:id/visits', authMiddleware, upload.single('voice_memo'
     number_of_employees: shop_profile.numberOfEmployees ?? null,
     shop_size_m2: shop_profile.shopSizeM2 ?? null,
     stock_behavior: shop_profile.stockBehavior || null,
+    vehicle_types: shop_profile.vehicleTypes ?? [],
+    vehicle_brands: shop_profile.vehicleBrands ?? [],
   } : null,
   competitor_info: (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) ? {
-    main_competitor: competition_info.mainCompetitor || null,
-    other_competitors: competition_info.otherCompetitors || null,
+    competitors_v2: competition_info.competitors ?? [],
     estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
-    competitor_strengths: competition_info.competitorStrengths || null,
     switch_reason: competition_info.switchReason || null,
   } : null,
   })
@@ -743,27 +750,27 @@ app.post('/api/prospects/:id/visits', authMiddleware, upload.single('voice_memo'
 
   if (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) {
     await supabase.from('crm_entity_shop_profile').upsert({
-      entity_type: 'prospect',
-      entity_id: id,
-      shop_type: shop_profile.shop_type || null,
-      number_of_employees: shop_profile.numberOfEmployees ?? null,
-      shop_size_m2: shop_profile.shopSizeM2 ?? null,
-      stock_behavior: shop_profile.stockBehavior || null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'entity_type,entity_id' });
+    entity_type: 'prospect',
+    entity_id: id,
+    shop_type: shop_profile.shop_type || null,
+    number_of_employees: shop_profile.numberOfEmployees ?? null,
+    shop_size_m2: shop_profile.shopSizeM2 ?? null,
+    stock_behavior: shop_profile.stockBehavior || null,
+    vehicle_types: shop_profile.vehicleTypes ?? [],
+    vehicle_brands: shop_profile.vehicleBrands ?? [],
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'entity_type,entity_id' });
   }
 
   if (competition_info && Object.values(competition_info).some(v => v !== undefined && v !== '' && v !== null)) {
     await supabase.from('crm_entity_competitor_info').upsert({
-      entity_type: 'prospect',
-      entity_id: id,
-      main_competitor: competition_info.mainCompetitor || null,
-      other_competitors: competition_info.otherCompetitors || null,
-      estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
-      competitor_strengths: competition_info.competitorStrengths || null,
-      switch_reason: competition_info.switchReason || null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'entity_type,entity_id' });
+    entity_type: 'prospect',
+    entity_id: id,
+    competitors_v2: competition_info.competitors ?? [],
+    estimated_monthly_spend: competition_info.estimatedMonthlySpend ?? null,
+    switch_reason: competition_info.switchReason || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'entity_type,entity_id' });
   }
 
   await supabase.from('crm_prospects')
