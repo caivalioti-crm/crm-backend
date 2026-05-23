@@ -1039,14 +1039,67 @@ router.get('/customers/:code/summary', async (req, res) => {
         return data ?? [];
       })(),
 
-      // Categories discussed
-      (async () => {
-        const { data } = await supabase
-          .from('crm_customer_category_scope')
-          .select('*')
-          .eq('customer_code', code);
-        return data ?? [];
-      })(),
+     // Categories discussed
+    (async () => {
+      const { data: visits } = await supabase
+        .from('crm_visits')
+        .select('id, visit_date')
+        .eq('customer_code', code);
+
+      if (!visits || visits.length === 0) return [];
+
+      const visitIds = visits.map(v => v.id);
+      const visitDateMap = new Map(visits.map(v => [v.id, v.visit_date]));
+
+      const { data: categories } = await supabase
+        .from('crm_visit_categories')
+        .select('category_code, subcategory_code, visit_id')
+        .in('visit_id', visitIds);
+
+      if (!categories || categories.length === 0) return [];
+
+      const allCodes = [...new Set([
+        ...categories.map(c => c.category_code),
+        ...categories.map(c => c.subcategory_code).filter(Boolean),
+      ])];
+
+      const { data: masters } = await supabase
+        .from('crm_category_master')
+        .select('category_code, full_name, short_name, level, parent_code')
+        .in('category_code', allCodes);
+
+      const masterMap = new Map((masters ?? []).map(m => [m.category_code, m]));
+
+      const grouped = new Map();
+      categories.forEach(c => {
+        const key = `${c.category_code}__${c.subcategory_code ?? ''}`;
+        const visitDate = visitDateMap.get(c.visit_id);
+        if (!grouped.has(key)) {
+          grouped.set(key, {
+            category_code: c.category_code,
+            subcategory_code: c.subcategory_code ?? null,
+            last_discussed: visitDate,
+            times_discussed: 1,
+          });
+        } else {
+          const existing = grouped.get(key);
+          existing.times_discussed++;
+          if (visitDate > existing.last_discussed) existing.last_discussed = visitDate;
+        }
+      });
+
+      return Array.from(grouped.values()).map(item => {
+        const displayCode = item.subcategory_code ?? item.category_code;
+        const master = masterMap.get(displayCode) ?? masterMap.get(item.category_code);
+        return {
+          ...item,
+          full_name: master?.full_name ?? displayCode,
+          short_name: master?.short_name ?? displayCode,
+          level: master?.level ?? 1,
+          parent_code: master?.parent_code ?? null,
+        };
+      }).sort((a, b) => (b.last_discussed ?? '').localeCompare(a.last_discussed ?? ''));
+    })(),
 
       // Entity profile
       (async () => {
