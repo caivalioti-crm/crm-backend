@@ -1536,6 +1536,135 @@ app.get('/api/comments/unread', authMiddleware, async (req, res) => {
   }
 });
 
+const webpush = require('web-push');
+const cron = require('node-cron');
+
+webpush.setVapidDetails(
+  process.env.VAPID_EMAIL,
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY,
+);
+
+// Save push subscription
+app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
+  const { subscription } = req.body;
+  if (!subscription) return res.status(400).json({ error: 'Subscription required' });
+  await supabase.from('crm_push_subscriptions').upsert({
+    user_id: req.user.id,
+    subscription,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'user_id' });
+  res.json({ success: true });
+});
+
+// Snooze push notifications
+app.post('/api/push/snooze', authMiddleware, async (req, res) => {
+  const { snooze_until } = req.body; // ISO string
+  if (!snooze_until) return res.status(400).json({ error: 'snooze_until required' });
+  await supabase.from('crm_push_snooze').upsert({
+    user_id: req.user.id,
+    snoozed_until: snooze_until,
+  }, { onConflict: 'user_id' });
+  res.json({ success: true });
+});
+
+// Get VAPID public key (frontend needs this to subscribe)
+app.get('/api/push/vapid-public-key', (req, res) => {
+  res.json({ key: process.env.VAPID_PUBLIC_KEY });
+});
+
+// ─── DAILY CRON: 08:00 Greece time (UTC+3 = 05:00 UTC) ───────────────────────
+cron.schedule('0 5 * * *', async () => {
+  console.log('[CRON] Running daily push notifications...');
+  try {
+    const today = new Date().toISOString().split('T')[0];
+
+    // Get all subscriptions
+    const { data: subscriptions } = await supabase
+      .from('crm_push_subscriptions')
+      .select('user_id, subscription');
+
+    if (!subscriptions || subscriptions.length === 0) return;
+
+    // Get active snoozes
+    const { data: snoozes } = await supabase
+      .from('crm_push_snooze')
+      .select('user_id, snoozed_until')
+      .gt('snoozed_until', new Date().toISOString());
+
+    const snoozedUsers = new Set((snoozes ?? []).map(s => s.user_id));
+
+    // Get all user profiles to map salesman_code + role
+    const { data: profiles } = await supabase
+      .from('crm_user_profiles')
+      .select('id, salesman_code, role');
+
+    const profileMap = new Map((profiles ?? []).map(p => [p.id, p]));
+    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+    for (const sub of subscriptions) {
+      if (snoozedUsers.has(sub.user_id)) continue;
+
+      const profile = profileMap.get(sub.user_id);
+      if (!profile) continue;
+
+      // Get visits for this user
+      let visitsQuery = supabase
+        .from('crm_visits')
+        .select('id');
+
+      if (!FULL_ACCESS_ROLES.includes(profile.role)) {
+        visitsQuery = visitsQuery.eq('salesman_code', profile.salesman_code);
+      }
+
+      const { data: visits } = await visitsQuery;
+      const visitIds = (visits ?? []).map(v => v.id);
+      if (visitIds.length === 0) continue;
+
+      // Get due tasks
+      const { data: tasks } = await supabase
+        .from('crm_visit_tasks')
+        .select('id, description, reminder_date')
+        .in('visit_id', visitIds)
+        .not('status', 'eq', 'completed')
+        .not('reminder_date', 'is', null)
+        .lte('reminder_date', today);
+
+      if (!tasks || tasks.length === 0) continue;
+
+      const todayTasks = tasks.filter(t => t.reminder_date === today);
+      const overdueTasks = tasks.filter(t => t.reminder_date < today);
+
+      const title = todayTasks.length > 0
+        ? `📋 ${todayTasks.length} εργασία${todayTasks.length > 1 ? 'ίες' : ''} για σήμερα`
+        : `⚠️ ${overdueTasks.length} ληξιπρόθεσμη${overdueTasks.length > 1 ? 'ες' : ''} εργασία${overdueTasks.length > 1 ? 'ίες' : ''}`;
+
+      const body = tasks.slice(0, 3).map(t => `• ${t.description}`).join('\n')
+        + (tasks.length > 3 ? `\n+${tasks.length - 3} ακόμη` : '');
+
+      const payload = JSON.stringify({
+        title,
+        body,
+        url: 'https://crm.eaivaliotis.gr',
+        todayCount: todayTasks.length,
+        overdueCount: overdueTasks.length,
+      });
+
+      try {
+        await webpush.sendNotification(sub.subscription, payload);
+      } catch (err) {
+        console.error(`Push failed for user ${sub.user_id}:`, err.message);
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          await supabase.from('crm_push_subscriptions').delete().eq('user_id', sub.user_id);
+        }
+      }
+    }
+    console.log('[CRON] Push notifications sent.');
+  } catch (err) {
+    console.error('[CRON] Error:', err);
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
