@@ -1033,7 +1033,7 @@ router.get('/customers/:code/summary', async (req, res) => {
       (async () => {
         const { data } = await supabase
           .from('crm_visits')
-          .select('*')
+          .select('*, crm_visit_tasks(*)')
           .eq('customer_code', code)
           .order('visit_date', { ascending: false });
         return data ?? [];

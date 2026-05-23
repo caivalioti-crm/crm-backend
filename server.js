@@ -1665,6 +1665,57 @@ cron.schedule('0 5 * * *', async () => {
   }
 });
 
+const path = require('path');
+
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.send(`
+self.addEventListener('push', event => {
+  const data = event.data?.json() ?? {};
+  const title = data.title ?? 'CRM Alert';
+  const options = {
+    body: data.body ?? '',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    data: { url: data.url ?? '/' },
+    actions: [
+      { action: 'snooze2h', title: '⏰ Snooze 2 ώρες' },
+      { action: 'open', title: '📋 Άνοιγμα' },
+    ],
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  if (event.action === 'snooze2h') {
+    const snoozeUntil = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    event.waitUntil(
+      fetch('/api/push/snooze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snooze_until: snoozeUntil }),
+      })
+    );
+    return;
+  }
+  const url = event.notification.data?.url ?? '/';
+  event.waitUntil(clients.openWindow(url));
+});
+  `);
+});
+
+app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { status, reminder_date } = req.body;
+  const update = {};
+  if (status !== undefined) update.status = status;
+  if (reminder_date !== undefined) update.reminder_date = reminder_date;
+  const { error } = await supabase.from('crm_visit_tasks').update(update).eq('id', id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
