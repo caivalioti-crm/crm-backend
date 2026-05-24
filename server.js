@@ -237,11 +237,14 @@ app.get('/api/visits', authMiddleware, async (req, res) => {
     query = query.eq('salesman_code', req.user.salesman_code);
   }
 
-  if (customer_code) {
-    query = query.eq('customer_code', customer_code);
-  }
+  if (customer_code) query = query.eq('customer_code', customer_code);
+
+  const { from, to } = req.query;
+    if (from) query = query.gte('visit_date', from);
+    if (to) query = query.lte('visit_date', to);
 
   const { data, error } = await query;
+
   if (error) {
     console.error('Visits fetch error:', error);
     return res.status(500).json({ error: error.message });
