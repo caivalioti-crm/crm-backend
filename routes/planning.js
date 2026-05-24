@@ -351,7 +351,9 @@ console.log('First customer:', customers?.[0]);
     const { data: tierData } = await supabase
       .from('mv_crm_customer_tier')
       .select('customer_code, tier, last_invoice_date, total_invoices_6m, months_with_invoices')
-      .in('customer_code', customerCodes);
+      .in('customer_code', customerCodes.map(c => Number(c)));
+
+    console.log('Tier data sample:', tierData?.[0], 'CustomerCodes sample:', customerCodes.slice(0, 3));
 
     const tierMap = new Map((tierData ?? []).map(t => [String(t.customer_code), t]));
 
