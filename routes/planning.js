@@ -332,7 +332,7 @@ router.post('/suggest', async (req, res) => {
     let custQuery = supabase
       .from('vw_crm_customers')
       .select('code, name, city, area, address, joined_date, salesman_code')
-      .eq('salesman_code', salesmanCode)
+      .eq('salesman_code', Number(salesmanCode))
       .in('area', neededAreas);
 
     const { data: customers, error: custError } = await custQuery;
