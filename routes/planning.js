@@ -339,6 +339,11 @@ router.post('/suggest', async (req, res) => {
     if (custError) throw custError;
 
     const customerCodes = (customers ?? []).map(c => String(c.code));
+    console.log('Suggest debug:', {
+  salesmanCode,
+  neededAreas,
+  customerCodesCount: customerCodes.length,
+});
     if (!customerCodes.length) return res.json({ days: [] });
 
     // 4. Fetch tier data from materialized view
