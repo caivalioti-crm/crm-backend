@@ -344,6 +344,7 @@ router.post('/suggest', async (req, res) => {
   neededAreas,
   customerCodesCount: customerCodes.length,
 });
+console.log('First customer:', customers?.[0]);
     if (!customerCodes.length) return res.json({ days: [] });
 
     // 4. Fetch tier data from materialized view
