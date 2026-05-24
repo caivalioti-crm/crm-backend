@@ -10,6 +10,8 @@ const upload = multer({
   storage: multer.memoryStorage(), 
   limits: { fileSize: 10 * 1024 * 1024 } 
 });
+const planningRouter = require('./routes/planning');
+
 
 function convertDateToISO(ddmmyy) {
   const [day, month, shortYear] = ddmmyy.split('/');
@@ -33,6 +35,7 @@ app.use(cors({
 
 app.use(express.json());
 app.use('/api/erp', authMiddleware, erpRoutes);
+app.use('/api/planning', authMiddleware, planningRouter);
 
 app.get('/api/me', authMiddleware, async (req, res) => {
   res.json(req.user);
