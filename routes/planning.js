@@ -331,7 +331,7 @@ router.post('/suggest', async (req, res) => {
     // 3. Fetch customers for these areas/cities assigned to this rep
     let custQuery = supabase
       .from('vw_crm_customers')
-      .select('code, name, city, area, address, joined_date, salesman_code')
+      .select('code, name, city, area, address, salesman_code')
       .eq('salesman_code', Number(salesmanCode))
       .in('area', neededAreas);
 
@@ -467,7 +467,7 @@ router.post('/suggest', async (req, res) => {
         city: c.city,
         area: c.area,
         address: c.address,
-        joined_date: c.joined_date,
+       
         tier: tierLevel,
         last_visit_date: lastVisit ?? null,
         last_invoice_date: tier?.last_invoice_date ?? null,
@@ -489,8 +489,7 @@ router.post('/suggest', async (req, res) => {
         const perf = performanceMap.get(c.code);
         if (perf === null || perf >= 0) return false;
       }
-      if (filters.joined_after && c.joined_date < filters.joined_after) return false;
-      if (filters.joined_before && c.joined_date > filters.joined_before) return false;
+   
       return true;
     });
 
