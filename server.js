@@ -1722,6 +1722,24 @@ app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
+app.post('/api/customers/:code/coordinates', authMiddleware, async (req, res) => {
+  const { code } = req.params;
+  const { lat, lng, accuracy_meters } = req.body;
+  if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required' });
+  const { error } = await supabase
+    .from('crm_customer_coordinates')
+    .upsert({
+      customer_code: code,
+      lat,
+      lng,
+      accuracy_meters: accuracy_meters ?? null,
+      captured_by: req.user.id,
+      captured_at: new Date().toISOString(),
+    }, { onConflict: 'customer_code' });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
