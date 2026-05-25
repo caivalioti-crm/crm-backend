@@ -1,3 +1,14 @@
+const express = require('express');
+const router = express.Router();
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
 // GET /api/coordinates-by-rep?salesman_code=29&area=ΘΕΣΣΑΛΟΝΙΚΗ&city=ΠΟΛΥΓΥΡΟΣ
 router.get('/coordinates', async (req, res) => {
   try {
@@ -107,3 +118,5 @@ router.patch('/coordinates/:customer_code', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+module.exports = router;
