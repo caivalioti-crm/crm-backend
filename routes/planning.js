@@ -358,9 +358,9 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
       .in('customer_code', trdrIds);
 
     // Build tierMap keyed by trdr_code for easy lookup
-    const trdrIdToCode = new Map((trdrMap ?? []).map(t => [t.trdr_id, String(t.trdr_code)]));
+    const trdrIdToCode = new Map((trdrMap ?? []).map(t => [String(t.trdr_id), String(t.trdr_code)]));
     const tierMap = new Map((tierData ?? []).map(t => [
-      trdrIdToCode.get(t.customer_code) ?? String(t.customer_code),
+      trdrIdToCode.get(String(t.customer_code)) ?? String(t.customer_code),
       t
     ]));
 
