@@ -417,13 +417,13 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
           .eq('company', 1000)
           .in('series', [7061, 7062, 7080])
           .gte('trndate', currFrom).lte('trndate', currTo)
-          .in('trdr', customerCodes),
+          .in('trdr', trdrIds),
         supabase.from('stg_soft1_findoc')
           .select('trdr, netamnt')
           .eq('company', 1000)
           .in('series', [7061, 7062, 7080])
           .gte('trndate', prevFrom).lte('trndate', prevTo)
-          .in('trdr', customerCodes),
+          .in('trdr', trdrIds),
       ]);
 
       const currMap = new Map();
@@ -435,10 +435,44 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
         prevMap.set(String(r.trdr), (prevMap.get(String(r.trdr)) ?? 0) + Number(r.netamnt ?? 0));
       }
       for (const code of customerCodes) {
-        const curr = currMap.get(code) ?? 0;
-        const prev = prevMap.get(code) ?? 0;
+        const trdrId = String(codeToTrdrId.get(code) ?? '');
+        const curr = currMap.get(trdrId) ?? 0;
+        const prev = prevMap.get(trdrId) ?? 0;
         performanceMap.set(code, prev > 0 ? (curr - prev) / prev : null);
       }
+    }
+
+// 8b. Fetch YTD performance for all customers
+    const now = new Date();
+    const ytdFrom = new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
+    const ytdTo = now.toISOString().split('T')[0];
+    const prevYtdFrom = new Date(now.getFullYear() - 1, 0, 1).toISOString().split('T')[0];
+    const prevYtdTo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().split('T')[0];
+
+    const [ytdResult, prevYtdResult] = await Promise.all([
+      supabase.from('stg_soft1_findoc')
+        .select('trdr, netamnt')
+        .eq('company', 1000)
+        .in('series', [7061, 7062, 7080])
+        .gte('trndate', ytdFrom).lte('trndate', ytdTo)
+        .in('trdr', trdrIds),
+      supabase.from('stg_soft1_findoc')
+        .select('trdr, netamnt')
+        .eq('company', 1000)
+        .in('series', [7061, 7062, 7080])
+        .gte('trndate', prevYtdFrom).lte('trndate', prevYtdTo)
+        .in('trdr', trdrIds),
+    ]);
+
+    const ytdMap = new Map();
+    for (const r of ytdResult.data ?? []) {
+      const code = trdrIdToCode.get(String(r.trdr)) ?? String(r.trdr);
+      ytdMap.set(code, (ytdMap.get(code) ?? 0) + Number(r.netamnt ?? 0));
+    }
+    const prevYtdMap = new Map();
+    for (const r of prevYtdResult.data ?? []) {
+      const code = trdrIdToCode.get(String(r.trdr)) ?? String(r.trdr);
+      prevYtdMap.set(code, (prevYtdMap.get(code) ?? 0) + Number(r.netamnt ?? 0));
     }
 
     // 9. Target visit interval in days per tier
@@ -471,14 +505,22 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
       // Combined urgency score (60% visit recency, 40% purchase recency)
       const urgencyScore = (overdueScore * 0.6) + ((daysSincePurchase / 30) * 0.4);
 
+const ytdRevenue = ytdMap.get(code) ?? 0;
+      const prevYtdRevenue = prevYtdMap.get(code) ?? 0;
+      const ytdGrowthPct = prevYtdRevenue > 0
+        ? ((ytdRevenue - prevYtdRevenue) / prevYtdRevenue) * 100
+        : null;
+
       return {
         code,
         name: c.name,
         city: c.city,
         area: c.area,
         address: c.address,
-       
         tier: tierLevel,
+        ytd_revenue: Math.round(ytdRevenue),
+        prev_ytd_revenue: Math.round(prevYtdRevenue),
+        ytd_growth_pct: ytdGrowthPct !== null ? Math.round(ytdGrowthPct * 10) / 10 : null,
         last_visit_date: lastVisit ?? null,
         last_invoice_date: tier?.last_invoice_date ?? null,
         days_since_visit: daysSinceVisit,
@@ -588,6 +630,9 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
     suggested_time: timeStr,
     constraint: c.constraint,
     total_invoices_6m: c.total_invoices_6m,
+    ytd_revenue: c.ytd_revenue,
+    prev_ytd_revenue: c.prev_ytd_revenue,
+    ytd_growth_pct: c.ytd_growth_pct,
   };
 });
 
