@@ -364,6 +364,14 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
       t
     ]));
 
+// 4b. Fetch coordinates for all customers
+    const { data: coordData } = await supabase
+      .from('crm_customer_coordinates')
+      .select('customer_code, lat, lng, accuracy_meters')
+      .in('customer_code', customerCodes);
+
+    const coordMap = new Map((coordData ?? []).map(c => [String(c.customer_code), c]));
+
     // 5. Fetch last visit date per customer for this rep
     const { data: visitData } = await supabase
       .from('crm_visits')
@@ -517,6 +525,9 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
         city: c.city,
         area: c.area,
         address: c.address,
+        lat: coordMap.get(code)?.lat ?? null,
+        lng: coordMap.get(code)?.lng ?? null,
+        coord_accuracy: coordMap.get(code)?.accuracy_meters ?? null,
         tier: tierLevel,
         ytd_revenue: Math.round(ytdRevenue),
         prev_ytd_revenue: Math.round(prevYtdRevenue),
@@ -578,12 +589,11 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
       );
 
       // Get candidates for this day's area/city
-      const candidates = scoredCustomers
-      .filter(c => {
-        if (globallyUsedCodes.has(c.code)) return false;
+      const filtered = scoredCustomers
+        .filter(c => {
+          if (globallyUsedCodes.has(c.code)) return false;
           if (c.area !== area) return false;
           if (city && c.city !== city) return false;
-          // Check day constraint
           if (c.constraint?.allowed_days?.length) {
             if (!c.constraint.allowed_days.includes(isoDay)) return false;
           }
@@ -591,6 +601,35 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
         })
         .sort((a, b) => b.urgency_score - a.urgency_score)
         .slice(0, availableSlots);
+
+      // Nearest-neighbor sort using coordinates
+      function distKm(a, b) {
+        if (!a.lat || !b.lat) return 0;
+        const R = 6371;
+        const dLat = (b.lat - a.lat) * Math.PI / 180;
+        const dLon = (b.lng - a.lng) * Math.PI / 180;
+        const x = Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) *
+          Math.sin(dLon/2) * Math.sin(dLon/2);
+        return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+      }
+
+      // Sort by nearest neighbor starting from first (highest urgency)
+      const candidates = [];
+      const pool = [...filtered];
+      if (pool.length > 0) {
+        candidates.push(pool.splice(0, 1)[0]);
+        while (pool.length > 0) {
+          const last = candidates[candidates.length - 1];
+          let nearestIdx = 0;
+          let nearestDist = Infinity;
+          for (let j = 0; j < pool.length; j++) {
+            const d = distKm(last, pool[j]);
+            if (d < nearestDist) { nearestDist = d; nearestIdx = j; }
+          }
+          candidates.push(pool.splice(nearestIdx, 1)[0]);
+        }
+      }
 
       // Mark as used globally so same customer isn't scheduled twice in the week
       for (const c of candidates) globallyUsedCodes.add(c.code);
@@ -612,8 +651,15 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
   // Add travel buffer
   const nextC = candidates[idx + 1];
   if (nextC) {
-    const sameCity = c.city === nextC.city;
-    currentMinutes += sameCity ? TRAVEL_BUFFER_SAME_CITY : TRAVEL_BUFFER_DIFF_CITY;
+    if (c.lat && nextC.lat) {
+      const km = distKm(c, nextC);
+      // ~40 km/h average in city/regional driving + 5 min buffer
+      const travelMins = Math.round((km / 40) * 60) + 5;
+      currentMinutes += Math.min(Math.max(travelMins, 5), 45); // cap 5-45 min
+    } else {
+      const sameCity = c.city === nextC.city;
+      currentMinutes += sameCity ? TRAVEL_BUFFER_SAME_CITY : TRAVEL_BUFFER_DIFF_CITY;
+    }
   }
   return {
     customer_code: c.code,
@@ -633,6 +679,8 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
     ytd_revenue: c.ytd_revenue,
     prev_ytd_revenue: c.prev_ytd_revenue,
     ytd_growth_pct: c.ytd_growth_pct,
+    lat: c.lat,
+    lng: c.lng,
   };
 });
 
