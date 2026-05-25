@@ -558,10 +558,9 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
       return true;
     });
 
-    // 11. Build day suggestions
+        // 11. Build day suggestions using k-means geographic clustering for same-area days
     const globallyUsedCodes = new Set();
 
-    // Pre-mark fixed appointment customer codes as used
     for (const [, fixed] of fixedByDate) {
       for (const f of fixed) {
         if (f.customer_code) globallyUsedCodes.add(f.customer_code);
@@ -572,145 +571,222 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
     const WORK_END = '17:00';
     const MINUTES_PER_CUSTOMER = 30;
 
-    const days = day_slots.map(slot => {
-      const { date, area, city } = slot;
-      const dayOfWeek = new Date(date).getDay(); // 0=Sun,1=Mon...6=Sat
-      // Convert to 1=Mon...7=Sun
-      const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
+    function distKm(a, b) {
+      if (!a.lat || !b.lat) return 999;
+      const R = 6371;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLon = (b.lng - a.lng) * Math.PI / 180;
+      const x = Math.sin(dLat/2) * Math.sin(dLat/2) +
+        Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) *
+        Math.sin(dLon/2) * Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+    }
 
-      const fixed = fixedByDate.get(date) ?? [];
+    function kMeans(points, k, iterations = 20) {
+      if (points.length === 0 || k === 0) return [];
+      k = Math.min(k, points.length);
 
-      // Calculate available slots after fixed appointments
-      const fixedMinutes = fixed.length * MINUTES_PER_CUSTOMER;
-      const workMinutes = 8 * 60; // 09:00-17:00
-      const availableSlots = Math.min(
-        max_per_day - fixed.length,
-        Math.floor((workMinutes - fixedMinutes) / MINUTES_PER_CUSTOMER)
+      // Init centroids using farthest-point seeding
+      let centroids = [points[0]];
+      for (let i = 1; i < k; i++) {
+        let farthest = null, maxD = -1;
+        for (const p of points) {
+          const minD = Math.min(...centroids.map(c => distKm(c, p)));
+          if (minD > maxD) { maxD = minD; farthest = p; }
+        }
+        if (farthest) centroids.push(farthest);
+      }
+
+      let clusters = Array.from({ length: k }, () => []);
+      for (let iter = 0; iter < iterations; iter++) {
+        clusters = Array.from({ length: k }, () => []);
+        for (const p of points) {
+          let minD = Infinity, best = 0;
+          for (let i = 0; i < k; i++) {
+            const d = distKm(centroids[i], p);
+            if (d < minD) { minD = d; best = i; }
+          }
+          clusters[best].push(p);
+        }
+        // Recompute centroids
+        for (let i = 0; i < k; i++) {
+          if (clusters[i].length > 0) {
+            centroids[i] = {
+              lat: clusters[i].reduce((s, p) => s + (p.lat ?? 0), 0) / clusters[i].length,
+              lng: clusters[i].reduce((s, p) => s + (p.lng ?? 0), 0) / clusters[i].length,
+            };
+          }
+        }
+      }
+      return clusters;
+    }
+
+    // Group day_slots by area+city key
+    const areaGroups = {};
+    for (const slot of day_slots) {
+      const key = `${slot.area}||${slot.city || ''}`;
+      if (!areaGroups[key]) areaGroups[key] = [];
+      areaGroups[key].push(slot);
+    }
+
+    // Pre-cluster customers for each area group
+    const clusterAssignments = new Map(); // date -> customer[]
+
+    for (const [key, slots] of Object.entries(areaGroups)) {
+      const [area, city] = key.split('||');
+      const k = slots.length;
+
+      const pool = scoredCustomers.filter(c =>
+        !globallyUsedCodes.has(c.code) &&
+        c.area === area &&
+        (!city || c.city === city)
       );
 
-      // Get candidates for this day's area/city
-      const filtered = scoredCustomers
-        .filter(c => {
-          if (globallyUsedCodes.has(c.code)) return false;
-          if (c.area !== area) return false;
-          if (city && c.city !== city) return false;
-          if (c.constraint?.allowed_days?.length) {
-            if (!c.constraint.allowed_days.includes(isoDay)) return false;
-          }
-          return true;
-        })
-        .sort((a, b) => b.urgency_score - a.urgency_score);
-        
-
-      function distKm(a, b) {
-        if (!a.lat || !b.lat) return 999;
-        const R = 6371;
-        const dLat = (b.lat - a.lat) * Math.PI / 180;
-        const dLon = (b.lng - a.lng) * Math.PI / 180;
-        const x = Math.sin(dLat/2) * Math.sin(dLat/2) +
-          Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) *
-          Math.sin(dLon/2) * Math.sin(dLon/2);
-        return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+      if (pool.length === 0) {
+        for (const slot of slots) clusterAssignments.set(slot.date, []);
+        continue;
       }
 
-      // Step 1: find the geographic centroid of ALL filtered customers
-      const withCoords = filtered.filter(c => c.lat && c.lng);
-      const centroidLat = withCoords.length
-        ? withCoords.reduce((s, c) => s + c.lat, 0) / withCoords.length : 0;
-      const centroidLng = withCoords.length
-        ? withCoords.reduce((s, c) => s + c.lng, 0) / withCoords.length : 0;
-      const centroid = { lat: centroidLat, lng: centroidLng };
+      const withCoords = pool.filter(c => c.lat && c.lng);
+      const withoutCoords = pool.filter(c => !c.lat || !c.lng);
 
-      // Step 2: score each customer by geo-proximity to centroid + urgency
-      // Weight: 70% proximity, 30% urgency
-      const maxDist = Math.max(...filtered.map(c => distKm(centroid, c)), 1);
-      const maxUrgency = Math.max(...filtered.map(c => c.urgency_score), 1);
-
-      const scored = filtered.map(c => ({
-        ...c,
-        combined_score:
-          (1 - distKm(centroid, c) / maxDist) * 0.7 +
-          (c.urgency_score / maxUrgency) * 0.3,
-      })).sort((a, b) => b.combined_score - a.combined_score);
-
-      // Step 3: take top N by combined score
-      const topN = scored.slice(0, availableSlots);
-
-      // Step 4: nearest-neighbor sort within topN for optimal route order
-      const candidates = [];
-      const pool = [...topN];
-      if (pool.length > 0) {
-        // Start from the customer furthest north (highest lat) as natural start of day
-        let startIdx = 0;
-        let maxLat = -Infinity;
-        for (let j = 0; j < pool.length; j++) {
-          if ((pool[j].lat ?? 0) > maxLat) { maxLat = pool[j].lat ?? 0; startIdx = j; }
-        }
-        candidates.push(pool.splice(startIdx, 1)[0]);
-        while (pool.length > 0) {
-          const last = candidates[candidates.length - 1];
-          let nearestIdx = 0;
-          let nearestDist = Infinity;
-          for (let j = 0; j < pool.length; j++) {
-            const d = distKm(last, pool[j]);
-            if (d < nearestDist) { nearestDist = d; nearestIdx = j; }
-          }
-          candidates.push(pool.splice(nearestIdx, 1)[0]);
-        }
+      let clusters;
+      if (withCoords.length >= k) {
+        clusters = kMeans(withCoords, k);
+        // Distribute customers without coords evenly across clusters
+        withoutCoords.forEach((c, i) => clusters[i % k].push(c));
+      } else {
+        // Not enough coords — split by urgency
+        const sorted = [...pool].sort((a, b) => b.urgency_score - a.urgency_score);
+        clusters = Array.from({ length: k }, () => []);
+        sorted.forEach((c, i) => clusters[i % k].push(c));
       }
 
-      // Mark as used globally so same customer isn't scheduled twice in the week
-      for (const c of candidates) globallyUsedCodes.add(c.code);
+      // Sort clusters north to south (higher lat = earlier in week)
+      clusters.sort((a, b) => {
+        const coordsA = a.filter(c => c.lat);
+        const coordsB = b.filter(c => c.lat);
+        const latA = coordsA.length ? coordsA.reduce((s, c) => s + c.lat, 0) / coordsA.length : 0;
+        const latB = coordsB.length ? coordsB.reduce((s, c) => s + c.lat, 0) / coordsB.length : 0;
+        return latB - latA;
+      });
 
-      // Assign times starting from 09:00, after fixed appointments
-      let currentMinutes = 9 * 60;
-      const TRAVEL_BUFFER_SAME_CITY = 10; // minutes
-      const TRAVEL_BUFFER_DIFF_CITY = 20; // minutes
-      // Skip past fixed appointment times
+      // Assign each cluster to a day slot
+      for (let i = 0; i < slots.length; i++) {
+        const slot = slots[i];
+        const cluster = clusters[i] ?? [];
+        const maxSlots = Math.min(
+          max_per_day - (fixedByDate.get(slot.date)?.length ?? 0),
+          16
+        );
+
+        // Within cluster: rank by urgency+proximity to cluster centroid
+        const clusterCoords = cluster.filter(c => c.lat && c.lng);
+        const clusterCentLat = clusterCoords.length
+          ? clusterCoords.reduce((s, c) => s + c.lat, 0) / clusterCoords.length : 0;
+        const clusterCentLng = clusterCoords.length
+          ? clusterCoords.reduce((s, c) => s + c.lng, 0) / clusterCoords.length : 0;
+        const clusterCentroid = { lat: clusterCentLat, lng: clusterCentLng };
+
+        const maxD = Math.max(...cluster.map(c => distKm(clusterCentroid, c)), 1);
+        const maxU = Math.max(...cluster.map(c => c.urgency_score), 1);
+
+        const ranked = cluster
+          .filter(c => !globallyUsedCodes.has(c.code))
+          .map(c => ({
+            ...c,
+            combined: (1 - distKm(clusterCentroid, c) / maxD) * 0.6 +
+                      (c.urgency_score / maxU) * 0.4,
+          }))
+          .sort((a, b) => b.combined - a.combined)
+          .slice(0, maxSlots);
+
+        clusterAssignments.set(slot.date, ranked);
+        for (const c of ranked) globallyUsedCodes.add(c.code);
+      }
+    }
+
+    const days = day_slots.map(slot => {
+      const { date, area, city } = slot;
+      const dayOfWeek = new Date(date).getDay();
+      const isoDay = dayOfWeek === 0 ? 7 : dayOfWeek;
+      const fixed = fixedByDate.get(date) ?? [];
       const sortedFixed = [...fixed].sort((a, b) =>
         (a.planned_time ?? '09:00').localeCompare(b.planned_time ?? '09:00')
       );
 
-      const suggested = candidates.map((c, idx) => {
-  const hours = Math.floor(currentMinutes / 60);
-  const mins = currentMinutes % 60;
-  const timeStr = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
-  currentMinutes += MINUTES_PER_CUSTOMER;
-  // Add travel buffer
-  const nextC = candidates[idx + 1];
-  if (nextC) {
-    if (c.lat && nextC.lat) {
-      const km = distKm(c, nextC);
-      // ~40 km/h average in city/regional driving + 5 min buffer
-      const travelMins = Math.round((km / 40) * 60) + 5;
-      currentMinutes += Math.min(Math.max(travelMins, 5), 45); // cap 5-45 min
-    } else {
-      const sameCity = c.city === nextC.city;
-      currentMinutes += sameCity ? TRAVEL_BUFFER_SAME_CITY : TRAVEL_BUFFER_DIFF_CITY;
-    }
-  }
-  return {
-    customer_code: c.code,
-    customer_name: c.name,
-    city: c.city,
-    area: c.area,
-    address: c.address,
-    tier: c.tier,
-    last_visit_date: c.last_visit_date,
-    last_invoice_date: c.last_invoice_date,
-    days_since_visit: c.days_since_visit,
-    days_since_purchase: c.days_since_purchase,
-    urgency_score: Math.round(c.urgency_score * 100) / 100,
-    suggested_time: timeStr,
-    constraint: c.constraint,
-    total_invoices_6m: c.total_invoices_6m,
-    ytd_revenue: c.ytd_revenue,
-    prev_ytd_revenue: c.prev_ytd_revenue,
-    ytd_growth_pct: c.ytd_growth_pct,
-    lat: c.lat,
-    lng: c.lng,
-  };
-});
+      let assigned = (clusterAssignments.get(date) ?? []).filter(c =>
+        !c.constraint?.allowed_days?.length ||
+        c.constraint.allowed_days.includes(isoDay)
+      );
+
+      // Nearest-neighbor sort — start from customer furthest from cluster centroid
+      const pool2 = [...assigned];
+      const ordered = [];
+      if (pool2.length > 0) {
+        const cLat = pool2.filter(c => c.lat).reduce((s, c) => s + c.lat, 0) / (pool2.filter(c => c.lat).length || 1);
+        const cLng = pool2.filter(c => c.lng).reduce((s, c) => s + c.lng, 0) / (pool2.filter(c => c.lng).length || 1);
+        const clusterCent = { lat: cLat, lng: cLng };
+        let startIdx = 0, maxD = -Infinity;
+        for (let j = 0; j < pool2.length; j++) {
+          const d = distKm(clusterCent, pool2[j]);
+          if (d > maxD) { maxD = d; startIdx = j; }
+        }
+        ordered.push(pool2.splice(startIdx, 1)[0]);
+        while (pool2.length > 0) {
+          const last = ordered[ordered.length - 1];
+          let nearestIdx = 0, nearestDist = Infinity;
+          for (let j = 0; j < pool2.length; j++) {
+            const d = distKm(last, pool2[j]);
+            if (d < nearestDist) { nearestDist = d; nearestIdx = j; }
+          }
+          ordered.push(pool2.splice(nearestIdx, 1)[0]);
+        }
+      }
+
+      let currentMinutes = 9 * 60;
+      const TRAVEL_BUFFER_SAME_CITY = 10;
+      const TRAVEL_BUFFER_DIFF_CITY = 20;
+
+      const suggested = ordered.map((c, idx) => {
+        const hours = Math.floor(currentMinutes / 60);
+        const mins = currentMinutes % 60;
+        const timeStr = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+        currentMinutes += MINUTES_PER_CUSTOMER;
+        const nextC = ordered[idx + 1];
+        if (nextC) {
+          if (c.lat && nextC.lat) {
+            const km = distKm(c, nextC);
+            const travelMins = Math.round((km / 40) * 60) + 5;
+            currentMinutes += Math.min(Math.max(travelMins, 5), 45);
+          } else {
+            currentMinutes += c.city === nextC.city ? TRAVEL_BUFFER_SAME_CITY : TRAVEL_BUFFER_DIFF_CITY;
+          }
+        }
+        return {
+          customer_code: c.code,
+          customer_name: c.name,
+          city: c.city,
+          area: c.area,
+          address: c.address,
+          tier: c.tier,
+          last_visit_date: c.last_visit_date,
+          last_invoice_date: c.last_invoice_date,
+          days_since_visit: c.days_since_visit,
+          days_since_purchase: c.days_since_purchase,
+          urgency_score: Math.round(c.urgency_score * 100) / 100,
+          suggested_time: timeStr,
+          constraint: c.constraint,
+          total_invoices_6m: c.total_invoices_6m,
+          ytd_revenue: c.ytd_revenue,
+          prev_ytd_revenue: c.prev_ytd_revenue,
+          ytd_growth_pct: c.ytd_growth_pct,
+          lat: c.lat,
+          lng: c.lng,
+        };
+      });
+
+      const availableSlots = Math.min(max_per_day - fixed.length, 16);
 
       return {
         date,
@@ -726,13 +802,12 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
       };
     });
 
-    // Build unscheduled list: customers in the planned areas not assigned to any day
     const scheduledCodes = new Set(
       days.flatMap(d => d.suggested.map(s => s.customer_code))
     );
 
     const unscheduled = scoredCustomers
-      .filter(c => !scheduledCodes.has(c.code) && !globallyUsedCodes.has(c.code))
+      .filter(c => !scheduledCodes.has(c.code))
       .sort((a, b) => b.urgency_score - a.urgency_score)
       .map(c => ({
         customer_code: c.code,
