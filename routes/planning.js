@@ -489,7 +489,10 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
       };
     }).filter(c => {
       // Apply filters
-      if (filters.tiers?.length && !filters.tiers.includes(c.tier)) return false;
+      if (filters.tiers?.length) {
+        const hasTierData = tierMap.has(c.code);
+        if (hasTierData && !filters.tiers.includes(tierLevel)) return false;
+      }
       if (filters.not_visited_since && c.days_since_visit < filters.not_visited_since) return false;
       if (filters.performance === 'up' && performanceMap.size > 0) {
         const perf = performanceMap.get(c.code);
@@ -504,12 +507,12 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
     });
 
     // 11. Build day suggestions
-    const usedCodes = new Set();
+    const globallyUsedCodes = new Set();
 
     // Pre-mark fixed appointment customer codes as used
     for (const [, fixed] of fixedByDate) {
       for (const f of fixed) {
-        if (f.customer_code) usedCodes.add(f.customer_code);
+        if (f.customer_code) globallyUsedCodes.add(f.customer_code);
       }
     }
 
@@ -535,8 +538,8 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
 
       // Get candidates for this day's area/city
       const candidates = scoredCustomers
-        .filter(c => {
-          if (usedCodes.has(c.code)) return false;
+      .filter(c => {
+        if (globallyUsedCodes.has(c.code)) return false;
           if (c.area !== area) return false;
           if (city && c.city !== city) return false;
           // Check day constraint
@@ -548,8 +551,8 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
         .sort((a, b) => b.urgency_score - a.urgency_score)
         .slice(0, availableSlots);
 
-      // Mark as used
-      for (const c of candidates) usedCodes.add(c.code);
+      // Mark as used globally so same customer isn't scheduled twice in the week
+      for (const c of candidates) globallyUsedCodes.add(c.code);
 
       // Assign times starting from 09:00, after fixed appointments
       let currentMinutes = 9 * 60;
