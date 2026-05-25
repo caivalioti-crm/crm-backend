@@ -602,9 +602,8 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
         .sort((a, b) => b.urgency_score - a.urgency_score)
         .slice(0, availableSlots);
 
-      // Nearest-neighbor sort using coordinates
       function distKm(a, b) {
-        if (!a.lat || !b.lat) return 0;
+        if (!a.lat || !b.lat) return 999;
         const R = 6371;
         const dLat = (b.lat - a.lat) * Math.PI / 180;
         const dLon = (b.lng - a.lng) * Math.PI / 180;
@@ -614,11 +613,31 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
         return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
       }
 
-      // Sort by nearest neighbor starting from first (highest urgency)
+      // Find geographic centroid of all filtered customers
+      const withCoords = filtered.filter(c => c.lat && c.lng);
+      const centroidLat = withCoords.length
+        ? withCoords.reduce((s, c) => s + c.lat, 0) / withCoords.length : 0;
+      const centroidLng = withCoords.length
+        ? withCoords.reduce((s, c) => s + c.lng, 0) / withCoords.length : 0;
+
+      // Score = urgency weight + geographic clustering weight
+      // Find the best "anchor" customer: highest urgency among top-10 by distance to centroid
+      const sortedByDist = [...filtered].sort((a, b) =>
+        distKm({ lat: centroidLat, lng: centroidLng }, a) -
+        distKm({ lat: centroidLat, lng: centroidLng }, b)
+      );
+      // Pick anchor = highest urgency among the 5 geographically closest
+      const anchorPool = sortedByDist.slice(0, 5);
+      const anchor = anchorPool.sort((a, b) => b.urgency_score - a.urgency_score)[0] ?? filtered[0];
+
+      // Nearest-neighbor from anchor
       const candidates = [];
       const pool = [...filtered];
-      if (pool.length > 0) {
-        candidates.push(pool.splice(0, 1)[0]);
+      if (pool.length > 0 && anchor) {
+        const anchorIdx = pool.findIndex(c => c.code === anchor.code);
+        if (anchorIdx >= 0) candidates.push(pool.splice(anchorIdx, 1)[0]);
+        else candidates.push(pool.splice(0, 1)[0]);
+
         while (pool.length > 0) {
           const last = candidates[candidates.length - 1];
           let nearestIdx = 0;
