@@ -339,23 +339,30 @@ router.post('/suggest', async (req, res) => {
     if (custError) throw custError;
 
     const customerCodes = (customers ?? []).map(c => String(c.code));
-    console.log('Suggest debug:', {
-  salesmanCode,
-  neededAreas,
-  customerCodesCount: customerCodes.length,
-});
-console.log('First customer:', customers?.[0]);
     if (!customerCodes.length) return res.json({ days: [] });
+
+// Map trdr_code → trdr_id for tier lookup
+const { data: trdrMap } = await supabase
+  .from('stg_soft1_trdr')
+  .select('trdr_code, trdr_id')
+  .in('trdr_code', customerCodes)
+  .eq('company', 1000);
+
+const codeToTrdrId = new Map((trdrMap ?? []).map(t => [String(t.trdr_code), t.trdr_id]));
+const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
 
     // 4. Fetch tier data from materialized view
     const { data: tierData } = await supabase
       .from('mv_crm_customer_tier')
       .select('customer_code, tier, last_invoice_date, total_invoices_6m, months_with_invoices')
-      .in('customer_code', customerCodes.map(c => Number(c)));
+      .in('customer_code', trdrIds);
 
-    console.log('Tier data sample:', tierData?.[0], 'CustomerCodes sample:', customerCodes.slice(0, 3));
-
-    const tierMap = new Map((tierData ?? []).map(t => [String(t.customer_code), t]));
+    // Build tierMap keyed by trdr_code for easy lookup
+    const trdrIdToCode = new Map((trdrMap ?? []).map(t => [t.trdr_id, String(t.trdr_code)]));
+    const tierMap = new Map((tierData ?? []).map(t => [
+      trdrIdToCode.get(t.customer_code) ?? String(t.customer_code),
+      t
+    ]));
 
     // 5. Fetch last visit date per customer for this rep
     const { data: visitData } = await supabase
