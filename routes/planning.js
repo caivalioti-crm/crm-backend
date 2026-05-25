@@ -717,7 +717,26 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
       };
     });
 
-    res.json({ week_start, days });
+    // Build unscheduled list: customers in the planned areas not assigned to any day
+    const scheduledCodes = new Set(
+      days.flatMap(d => d.suggested.map(s => s.customer_code))
+    );
+
+    const unscheduled = scoredCustomers
+      .filter(c => !scheduledCodes.has(c.code) && !globallyUsedCodes.has(c.code))
+      .sort((a, b) => b.urgency_score - a.urgency_score)
+      .map(c => ({
+        customer_code: c.code,
+        customer_name: c.name,
+        city: c.city,
+        area: c.area,
+        tier: c.tier,
+        days_since_visit: c.days_since_visit,
+        last_visit_date: c.last_visit_date,
+        urgency_score: Math.round(c.urgency_score * 100) / 100,
+      }));
+
+    res.json({ week_start, days, unscheduled });
   } catch (err) {
     console.error('Suggest error:', err);
     res.status(500).json({ error: err.message });
