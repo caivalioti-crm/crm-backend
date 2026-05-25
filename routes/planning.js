@@ -840,7 +840,7 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
     );
 
     const unscheduled = scoredCustomers
-      .filter(c => !scheduledCodes.has(c.code))
+      .filter(c => !scheduledCodes.has(c.code) && neededAreas.includes(c.area))
       .sort((a, b) => b.urgency_score - a.urgency_score)
       .map(c => ({
         customer_code: c.code,
