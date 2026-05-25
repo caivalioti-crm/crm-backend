@@ -370,7 +370,18 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
       .select('customer_code, lat, lng, accuracy_meters')
       .in('customer_code', customerCodes);
 
-    const coordMap = new Map((coordData ?? []).map(c => [String(c.customer_code), c]));
+    // Only use coordinates that are:
+// 1. Address-level accuracy (50m)
+// 2. Within Greece proper bounds
+function isValidGreekCoord(lat, lng) {
+  return lat >= 34.8 && lat <= 41.8 && lng >= 19.3 && lng <= 29.7;
+}
+
+const coordMap = new Map(
+  (coordData ?? [])
+    .filter(c => c.accuracy_meters === 50 && isValidGreekCoord(c.lat, c.lng))
+    .map(c => [String(c.customer_code), c])
+);
 
     // 5. Fetch last visit date per customer for this rep
     const { data: visitData } = await supabase
