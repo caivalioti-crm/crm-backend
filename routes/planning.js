@@ -452,7 +452,7 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
       const tier = tierMap.get(code);
       const lastVisit = lastVisitMap.get(code);
       const constraint = constraintMap.get(code);
-      const tierLevel = tier?.tier ?? 1;
+      const tierLevel = tier?.tier ?? 0;
       const targetDays = TIER_TARGET_DAYS[tierLevel];
 
       // Days since last visit
@@ -490,8 +490,7 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
     }).filter(c => {
       // Apply filters
       if (filters.tiers?.length) {
-        const hasTierData = tierMap.has(c.code);
-        if (hasTierData && !filters.tiers.includes(tierLevel)) return false;
+        if (!filters.tiers.includes(c.tier)) return false;
       }
       if (filters.not_visited_since && c.days_since_visit < filters.not_visited_since) return false;
       if (filters.performance === 'up' && performanceMap.size > 0) {
@@ -556,33 +555,41 @@ const trdrIds = customerCodes.map(c => codeToTrdrId.get(c)).filter(Boolean);
 
       // Assign times starting from 09:00, after fixed appointments
       let currentMinutes = 9 * 60;
+      const TRAVEL_BUFFER_SAME_CITY = 10; // minutes
+      const TRAVEL_BUFFER_DIFF_CITY = 20; // minutes
       // Skip past fixed appointment times
       const sortedFixed = [...fixed].sort((a, b) =>
         (a.planned_time ?? '09:00').localeCompare(b.planned_time ?? '09:00')
       );
 
       const suggested = candidates.map((c, idx) => {
-        const hours = Math.floor(currentMinutes / 60);
-        const mins = currentMinutes % 60;
-        const timeStr = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
-        currentMinutes += MINUTES_PER_CUSTOMER;
-        return {
-          customer_code: c.code,
-          customer_name: c.name,
-          city: c.city,
-          area: c.area,
-          address: c.address,
-          tier: c.tier,
-          last_visit_date: c.last_visit_date,
-          last_invoice_date: c.last_invoice_date,
-          days_since_visit: c.days_since_visit,
-          days_since_purchase: c.days_since_purchase,
-          urgency_score: Math.round(c.urgency_score * 100) / 100,
-          suggested_time: timeStr,
-          constraint: c.constraint,
-          total_invoices_6m: c.total_invoices_6m,
-        };
-      });
+  const hours = Math.floor(currentMinutes / 60);
+  const mins = currentMinutes % 60;
+  const timeStr = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+  currentMinutes += MINUTES_PER_CUSTOMER;
+  // Add travel buffer
+  const nextC = candidates[idx + 1];
+  if (nextC) {
+    const sameCity = c.city === nextC.city;
+    currentMinutes += sameCity ? TRAVEL_BUFFER_SAME_CITY : TRAVEL_BUFFER_DIFF_CITY;
+  }
+  return {
+    customer_code: c.code,
+    customer_name: c.name,
+    city: c.city,
+    area: c.area,
+    address: c.address,
+    tier: c.tier,
+    last_visit_date: c.last_visit_date,
+    last_invoice_date: c.last_invoice_date,
+    days_since_visit: c.days_since_visit,
+    days_since_purchase: c.days_since_purchase,
+    urgency_score: Math.round(c.urgency_score * 100) / 100,
+    suggested_time: timeStr,
+    constraint: c.constraint,
+    total_invoices_6m: c.total_invoices_6m,
+  };
+});
 
       return {
         date,
