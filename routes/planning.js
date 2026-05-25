@@ -599,8 +599,8 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
           }
           return true;
         })
-        .sort((a, b) => b.urgency_score - a.urgency_score)
-        .slice(0, availableSlots);
+        .sort((a, b) => b.urgency_score - a.urgency_score);
+        
 
       function distKm(a, b) {
         if (!a.lat || !b.lat) return 999;
@@ -613,31 +613,40 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
         return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
       }
 
-      // Find geographic centroid of all filtered customers
+      // Step 1: find the geographic centroid of ALL filtered customers
       const withCoords = filtered.filter(c => c.lat && c.lng);
       const centroidLat = withCoords.length
         ? withCoords.reduce((s, c) => s + c.lat, 0) / withCoords.length : 0;
       const centroidLng = withCoords.length
         ? withCoords.reduce((s, c) => s + c.lng, 0) / withCoords.length : 0;
+      const centroid = { lat: centroidLat, lng: centroidLng };
 
-      // Score = urgency weight + geographic clustering weight
-      // Find the best "anchor" customer: highest urgency among top-10 by distance to centroid
-      const sortedByDist = [...filtered].sort((a, b) =>
-        distKm({ lat: centroidLat, lng: centroidLng }, a) -
-        distKm({ lat: centroidLat, lng: centroidLng }, b)
-      );
-      // Pick anchor = highest urgency among the 5 geographically closest
-      const anchorPool = sortedByDist.slice(0, 5);
-      const anchor = anchorPool.sort((a, b) => b.urgency_score - a.urgency_score)[0] ?? filtered[0];
+      // Step 2: score each customer by geo-proximity to centroid + urgency
+      // Weight: 70% proximity, 30% urgency
+      const maxDist = Math.max(...filtered.map(c => distKm(centroid, c)), 1);
+      const maxUrgency = Math.max(...filtered.map(c => c.urgency_score), 1);
 
-      // Nearest-neighbor from anchor
+      const scored = filtered.map(c => ({
+        ...c,
+        combined_score:
+          (1 - distKm(centroid, c) / maxDist) * 0.7 +
+          (c.urgency_score / maxUrgency) * 0.3,
+      })).sort((a, b) => b.combined_score - a.combined_score);
+
+      // Step 3: take top N by combined score
+      const topN = scored.slice(0, availableSlots);
+
+      // Step 4: nearest-neighbor sort within topN for optimal route order
       const candidates = [];
-      const pool = [...filtered];
-      if (pool.length > 0 && anchor) {
-        const anchorIdx = pool.findIndex(c => c.code === anchor.code);
-        if (anchorIdx >= 0) candidates.push(pool.splice(anchorIdx, 1)[0]);
-        else candidates.push(pool.splice(0, 1)[0]);
-
+      const pool = [...topN];
+      if (pool.length > 0) {
+        // Start from the customer furthest north (highest lat) as natural start of day
+        let startIdx = 0;
+        let maxLat = -Infinity;
+        for (let j = 0; j < pool.length; j++) {
+          if ((pool[j].lat ?? 0) > maxLat) { maxLat = pool[j].lat ?? 0; startIdx = j; }
+        }
+        candidates.push(pool.splice(startIdx, 1)[0]);
         while (pool.length > 0) {
           const last = candidates[candidates.length - 1];
           let nearestIdx = 0;
