@@ -717,6 +717,28 @@ const ytdRevenue = ytdMap.get(code) ?? 0;
       }
     }
 
+    // Fill underfull days from unassigned pool
+    for (const [key, slots] of Object.entries(areaGroups)) {
+      const [area, city] = key.split('||');
+      for (const slot of slots) {
+        const assigned = clusterAssignments.get(slot.date) ?? [];
+        const maxSlots = Math.min(max_per_day - (fixedByDate.get(slot.date)?.length ?? 0), 16);
+        if (assigned.length < maxSlots) {
+          const remaining = scoredCustomers.filter(c =>
+            !globallyUsedCodes.has(c.code) &&
+            c.area === area &&
+            (!city || c.city === city)
+          ).sort((a, b) => b.urgency_score - a.urgency_score)
+           .slice(0, maxSlots - assigned.length);
+          for (const c of remaining) {
+            assigned.push(c);
+            globallyUsedCodes.add(c.code);
+          }
+          clusterAssignments.set(slot.date, assigned);
+        }
+      }
+    }
+
     const days = day_slots.map(slot => {
       const { date, area, city } = slot;
       const dayOfWeek = new Date(date).getDay();
