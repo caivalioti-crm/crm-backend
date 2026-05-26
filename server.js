@@ -1528,8 +1528,8 @@ async function sendDailyTaskReminders() {
       const overdueTasks = tasks.filter(t => t.reminder_date < today);
 
       const title = todayTasks.length > 0
-        ? `📋 ${todayTasks.length} εργασία${todayTasks.length > 1 ? 'ίες' : ''} για σήμερα`
-        : `⚠️ ${overdueTasks.length} ληξιπρόθεσμη${overdueTasks.length > 1 ? 'ες' : ''} εργασία${overdueTasks.length > 1 ? 'ίες' : ''}`;
+  ? `📋 ${todayTasks.length} ${todayTasks.length > 1 ? 'εργασίες' : 'εργασία'} για σήμερα`
+  : `⚠️ ${overdueTasks.length} ${overdueTasks.length > 1 ? 'ληξιπρόθεσμες εργασίες' : 'ληξιπρόθεσμη εργασία'}`;
 
       const body = tasks.slice(0, 3).map(t => `- ${t.description}`).join('\n')
         + (tasks.length > 3 ? `\n+${tasks.length - 3} ακόμη` : '');
@@ -1695,6 +1695,55 @@ self.addEventListener('notificationclick', event => {
   event.waitUntil(clients.openWindow(url));
 });
   `);
+});
+
+// GET /api/tasks/due — due and overdue tasks for current user
+app.get('/api/tasks/due', authMiddleware, async (req, res) => {
+  try {
+    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+    const today = new Date().toISOString().split('T')[0];
+
+    let visitsQuery = supabase
+      .from('crm_visits')
+      .select('id, customer_code, visit_date, notes');
+
+    if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+      visitsQuery = visitsQuery.eq('salesman_code', req.user.salesman_code);
+    }
+
+    const { data: visits, error: visitsError } = await visitsQuery;
+    if (visitsError) throw visitsError;
+
+    const visitIds = (visits ?? []).map(v => v.id);
+    if (visitIds.length === 0) return res.json({ today: [], overdue: [], total: 0 });
+
+    const { data: tasks, error: tasksError } = await supabase
+      .from('crm_visit_tasks')
+      .select('id, visit_id, description, reminder_date, status')
+      .in('visit_id', visitIds)
+      .not('status', 'eq', 'completed')
+      .not('reminder_date', 'is', null)
+      .lte('reminder_date', today);
+
+    if (tasksError) throw tasksError;
+
+    const visitMap = new Map((visits ?? []).map(v => [v.id, v]));
+
+    const enriched = (tasks ?? []).map(t => ({
+      ...t,
+      visit: visitMap.get(t.visit_id) ?? null,
+      is_overdue: t.reminder_date < today,
+    }));
+
+    res.json({
+      today: enriched.filter(t => t.reminder_date === today),
+      overdue: enriched.filter(t => t.reminder_date < today),
+      total: enriched.length,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.patch('/api/tasks/:id', authMiddleware, async (req, res) => {
