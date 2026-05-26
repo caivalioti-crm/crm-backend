@@ -1626,11 +1626,19 @@ app.get('/api/comments/unread', authMiddleware, async (req, res) => {
 app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
   const { subscription } = req.body;
   if (!subscription) return res.status(400).json({ error: 'Subscription required' });
-  await supabase.from('crm_push_subscriptions').upsert({
+  
+  const { error } = await supabase.from('crm_push_subscriptions').upsert({
     user_id: req.user.id,
     subscription,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'user_id' });
+  
+  if (error) {
+    console.error('[Push] Subscribe failed for user', req.user.id, ':', error);
+    return res.status(500).json({ error: error.message });
+  }
+  
+  console.log('[Push] Subscribed user:', req.user.id);
   res.json({ success: true });
 });
 
