@@ -25,7 +25,6 @@ function convertDateToISO(ddmmyy) {
 }
 
 const app = express();
-const app = express();
 
 webpush.setVapidDetails(
   process.env.VAPID_EMAIL,
@@ -1532,7 +1531,7 @@ async function sendDailyTaskReminders() {
         ? `📋 ${todayTasks.length} εργασία${todayTasks.length > 1 ? 'ίες' : ''} για σήμερα`
         : `⚠️ ${overdueTasks.length} ληξιπρόθεσμη${overdueTasks.length > 1 ? 'ες' : ''} εργασία${overdueTasks.length > 1 ? 'ίες' : ''}`;
 
-      const body = tasks.slice(0, 3).map(t => `• ${t.description}`).join('\n')
+      const body = tasks.slice(0, 3).map(t => `- ${t.description}`).join('\n')
         + (tasks.length > 3 ? `\n+${tasks.length - 3} ακόμη` : '');
 
       const payload = JSON.stringify({
