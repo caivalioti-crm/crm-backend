@@ -1173,19 +1173,7 @@ router.get('/customers/:code/summary', async (req, res) => {
   }
 });
 
-router.get('/reps', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('crm_user_profiles')
-      .select('id, full_name, salesman_code, role')
-      .in('role', ['rep', 'manager', 'exec', 'admin'])
-      .order('full_name');
-    if (error) throw error;
-    res.json(data ?? []);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+
 
 router.get('/reps', async (req, res) => {
   try {
