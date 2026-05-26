@@ -1451,51 +1451,120 @@ app.get('/api/customers/:code/similar-customers', authMiddleware, async (req, re
   }
 });
 
-// GET /api/tasks/due — due and overdue tasks for current user
-app.get('/api/tasks/due', authMiddleware, async (req, res) => {
+// ─── DAILY TASK REMINDERS ────────────────────────────────────────────────────
+async function sendDailyTaskReminders() {
+  console.log('[Push] Running daily task reminders...');
   try {
-    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
     const today = new Date().toISOString().split('T')[0];
 
-    let visitsQuery = supabase
-      .from('crm_visits')
-      .select('id, customer_code, visit_date, notes');
+    // Get all subscriptions
+    const { data: subscriptions } = await supabase
+      .from('crm_push_subscriptions')
+      .select('user_id, subscription');
 
-    if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
-      visitsQuery = visitsQuery.eq('salesman_code', req.user.salesman_code);
+    if (!subscriptions || subscriptions.length === 0) {
+      console.log('[Push] No subscriptions found.');
+      return { sent: 0, skipped: 0 };
     }
 
-    const { data: visits, error: visitsError } = await visitsQuery;
-    if (visitsError) throw visitsError;
+    // Get active snoozes
+    const { data: snoozes } = await supabase
+      .from('crm_push_snooze')
+      .select('user_id, snoozed_until')
+      .gt('snoozed_until', new Date().toISOString());
 
-    const visitIds = (visits ?? []).map(v => v.id);
-    if (visitIds.length === 0) return res.json({ today: [], overdue: [] });
+    const snoozedUsers = new Set((snoozes ?? []).map(s => s.user_id));
 
-    const { data: tasks, error: tasksError } = await supabase
-      .from('crm_visit_tasks')
-      .select('id, visit_id, description, reminder_date, status')
-      .in('visit_id', visitIds)
-      .not('status', 'eq', 'completed')
-      .not('reminder_date', 'is', null)
-      .lte('reminder_date', today);
+    // Get all user profiles to map salesman_code + role
+    const { data: profiles } = await supabase
+      .from('crm_user_profiles')
+      .select('id, salesman_code, role');
 
-    if (tasksError) throw tasksError;
+    const profileMap = new Map((profiles ?? []).map(p => [p.id, p]));
+    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
-    const visitMap = new Map((visits ?? []).map(v => [v.id, v]));
+    let sent = 0;
+    let skipped = 0;
 
-    const enriched = (tasks ?? []).map(t => ({
-      ...t,
-      visit: visitMap.get(t.visit_id) ?? null,
-      is_overdue: t.reminder_date < today,
-    }));
+    for (const sub of subscriptions) {
+      if (snoozedUsers.has(sub.user_id)) { skipped++; continue; }
 
-    res.json({
-      today: enriched.filter(t => t.reminder_date === today),
-      overdue: enriched.filter(t => t.reminder_date < today),
-      total: enriched.length,
-    });
+      const profile = profileMap.get(sub.user_id);
+      if (!profile) { skipped++; continue; }
+
+      // Get visits for this user
+      let visitsQuery = supabase
+        .from('crm_visits')
+        .select('id');
+
+      if (!FULL_ACCESS_ROLES.includes(profile.role)) {
+        visitsQuery = visitsQuery.eq('salesman_code', profile.salesman_code);
+      }
+
+      const { data: visits } = await visitsQuery;
+      const visitIds = (visits ?? []).map(v => v.id);
+      if (visitIds.length === 0) { skipped++; continue; }
+
+      // Get due tasks
+      const { data: tasks } = await supabase
+        .from('crm_visit_tasks')
+        .select('id, description, reminder_date')
+        .in('visit_id', visitIds)
+        .not('status', 'eq', 'completed')
+        .not('reminder_date', 'is', null)
+        .lte('reminder_date', today);
+
+      if (!tasks || tasks.length === 0) { skipped++; continue; }
+
+      const todayTasks = tasks.filter(t => t.reminder_date === today);
+      const overdueTasks = tasks.filter(t => t.reminder_date < today);
+
+      const title = todayTasks.length > 0
+        ? `📋 ${todayTasks.length} εργασία${todayTasks.length > 1 ? 'ίες' : ''} για σήμερα`
+        : `⚠️ ${overdueTasks.length} ληξιπρόθεσμη${overdueTasks.length > 1 ? 'ες' : ''} εργασία${overdueTasks.length > 1 ? 'ίες' : ''}`;
+
+      const body = tasks.slice(0, 3).map(t => `• ${t.description}`).join('\n')
+        + (tasks.length > 3 ? `\n+${tasks.length - 3} ακόμη` : '');
+
+      const payload = JSON.stringify({
+        title,
+        body,
+        url: 'https://crm.eaivaliotis.gr',
+        todayCount: todayTasks.length,
+        overdueCount: overdueTasks.length,
+      });
+
+      try {
+        await webpush.sendNotification(sub.subscription, payload);
+        sent++;
+      } catch (err) {
+        console.error(`[Push] Failed for user ${sub.user_id}:`, err.message);
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          await supabase.from('crm_push_subscriptions').delete().eq('user_id', sub.user_id);
+        }
+      }
+    }
+
+    console.log(`[Push] Done. Sent: ${sent}, Skipped: ${skipped}`);
+    return { sent, skipped };
   } catch (err) {
-    console.error(err);
+    console.error('[Push] Error in sendDailyTaskReminders:', err);
+    throw err;
+  }
+}
+
+// Schedule: daily at 08:00 Greece time (05:00 UTC)
+cron.schedule('0 5 * * *', sendDailyTaskReminders);
+
+// Manual trigger endpoint (admins/execs only)
+app.post('/api/push/trigger-reminders', authMiddleware, async (req, res) => {
+  if (!['admin', 'exec'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  try {
+    const result = await sendDailyTaskReminders();
+    res.json({ success: true, ...result });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
