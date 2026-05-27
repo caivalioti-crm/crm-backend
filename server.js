@@ -1542,15 +1542,16 @@ async function sendDailyTaskReminders() {
         overdueCount: overdueTasks.length,
       });
 
-      try {
-        await webpush.sendNotification(sub.subscription, payload);
-        sent++;
-      } catch (err) {
-        console.error(`[Push] Failed for user ${sub.user_id}:`, err.message);
-        if (err.statusCode === 410 || err.statusCode === 404) {
-          await supabase.from('crm_push_subscriptions').delete().eq('user_id', sub.user_id);
-        }
-      }
+try {
+  console.log(`[Push] Sending to user ${sub.user_id}, endpoint: ${sub.subscription.endpoint?.substring(0, 60)}...`);
+  await webpush.sendNotification(sub.subscription, payload, { TTL: 86400 });
+  sent++;
+} catch (err) {
+  console.error(`[Push] Failed for user ${sub.user_id}:`, err.message);
+  if (err.statusCode === 410 || err.statusCode === 404) {
+    await supabase.from('crm_push_subscriptions').delete().eq('user_id', sub.user_id);
+  }
+}
     }
 
     console.log(`[Push] Done. Sent: ${sent}, Skipped: ${skipped}`);
