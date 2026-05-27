@@ -1464,6 +1464,7 @@ async function sendDailyTaskReminders() {
   console.log('[Push] Running daily task reminders...');
   try {
     const today = new Date().toISOString().split('T')[0];
+    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
     // Get all subscriptions
     const { data: subscriptions } = await supabase
@@ -1483,13 +1484,40 @@ async function sendDailyTaskReminders() {
 
     const snoozedUsers = new Set((snoozes ?? []).map(s => s.user_id));
 
-    // Get all user profiles to map salesman_code + role
+    // Get all user profiles
     const { data: profiles } = await supabase
       .from('crm_user_profiles')
-      .select('id, salesman_code, role');
+      .select('id, salesman_code, role, full_name');
 
     const profileMap = new Map((profiles ?? []).map(p => [p.id, p]));
-    const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+
+    // ─── Pre-compute company-wide OVERDUE per rep (for manager team overview) ───
+    const { data: allVisits } = await supabase
+      .from('crm_visits')
+      .select('id, salesman_code, user_id');
+
+    const visitOwnerMap = new Map(
+      (allVisits ?? []).map(v => [v.id, { salesman_code: v.salesman_code, user_id: v.user_id }])
+    );
+
+    const { data: allOverdueTasks } = await supabase
+      .from('crm_visit_tasks')
+      .select('id, visit_id, reminder_date')
+      .not('status', 'eq', 'completed')
+      .not('reminder_date', 'is', null)
+      .lt('reminder_date', today);
+
+    const overdueByRep = new Map(); // salesman_code → count
+    for (const t of allOverdueTasks ?? []) {
+      const owner = visitOwnerMap.get(t.visit_id);
+      if (!owner || !owner.salesman_code) continue;
+      overdueByRep.set(owner.salesman_code, (overdueByRep.get(owner.salesman_code) ?? 0) + 1);
+    }
+
+    const nameBySalesmanCode = new Map();
+    for (const p of profiles ?? []) {
+      if (p.salesman_code) nameBySalesmanCode.set(p.salesman_code, p.full_name);
+    }
 
     let sent = 0;
     let skipped = 0;
@@ -1500,58 +1528,93 @@ async function sendDailyTaskReminders() {
       const profile = profileMap.get(sub.user_id);
       if (!profile) { skipped++; continue; }
 
-      // Get visits for this user
-      let visitsQuery = supabase
-        .from('crm_visits')
-        .select('id');
+      const isManager = FULL_ACCESS_ROLES.includes(profile.role);
 
-      if (!FULL_ACCESS_ROLES.includes(profile.role)) {
-        visitsQuery = visitsQuery.eq('salesman_code', profile.salesman_code);
+      // ─── Personal tasks: user_id OR salesman_code (Option C) ───
+      const orFilters = [`user_id.eq.${profile.id}`];
+      if (profile.salesman_code) {
+        orFilters.push(`salesman_code.eq.${profile.salesman_code}`);
       }
 
-      const { data: visits } = await visitsQuery;
+      const { data: visits } = await supabase
+        .from('crm_visits')
+        .select('id')
+        .or(orFilters.join(','));
+
       const visitIds = (visits ?? []).map(v => v.id);
-      if (visitIds.length === 0) { skipped++; continue; }
 
-      // Get due tasks
-      const { data: tasks } = await supabase
-        .from('crm_visit_tasks')
-        .select('id, description, reminder_date')
-        .in('visit_id', visitIds)
-        .not('status', 'eq', 'completed')
-        .not('reminder_date', 'is', null)
-        .lte('reminder_date', today);
+      let personalTasks = [];
+      if (visitIds.length > 0) {
+        const { data: tasks } = await supabase
+          .from('crm_visit_tasks')
+          .select('id, description, reminder_date')
+          .in('visit_id', visitIds)
+          .not('status', 'eq', 'completed')
+          .not('reminder_date', 'is', null)
+          .lte('reminder_date', today);
+        personalTasks = tasks ?? [];
+      }
 
-      if (!tasks || tasks.length === 0) { skipped++; continue; }
+      const todayTasks = personalTasks.filter(t => t.reminder_date === today);
+      const overdueTasks = personalTasks.filter(t => t.reminder_date < today);
 
-      const todayTasks = tasks.filter(t => t.reminder_date === today);
-      const overdueTasks = tasks.filter(t => t.reminder_date < today);
+      // ─── Team overview (managers only) ───
+      let teamSection = '';
+      if (isManager && overdueByRep.size > 0) {
+        const otherReps = [...overdueByRep.entries()]
+          .filter(([code]) => code !== profile.salesman_code);
 
-      const title = todayTasks.length > 0
-  ? `📋 ${todayTasks.length} ${todayTasks.length > 1 ? 'εργασίες' : 'εργασία'} για σήμερα`
-  : `⚠️ ${overdueTasks.length} ${overdueTasks.length > 1 ? 'ληξιπρόθεσμες εργασίες' : 'ληξιπρόθεσμη εργασία'}`;
+        if (otherReps.length > 0) {
+          const totalOverdue = otherReps.reduce((sum, [, count]) => sum + count, 0);
+          const repList = otherReps
+            .sort((a, b) => b[1] - a[1])
+            .map(([code, count]) => `${nameBySalesmanCode.get(code) ?? code} (${count})`)
+            .join(', ');
+          teamSection = `\n\n⚠️ Team: ${totalOverdue} ληξιπρόθεσμες\n${repList}`;
+        }
+      }
 
-      const body = tasks.slice(0, 3).map(t => `- ${t.description}`).join('\n')
-        + (tasks.length > 3 ? `\n+${tasks.length - 3} ακόμη` : '');
+      // Skip if nothing to say
+      if (personalTasks.length === 0 && !teamSection) { skipped++; continue; }
+
+      // ─── Build title ───
+      let title;
+      if (todayTasks.length > 0) {
+        title = `📋 ${todayTasks.length} ${todayTasks.length > 1 ? 'εργασίες' : 'εργασία'} για σήμερα`;
+      } else if (overdueTasks.length > 0) {
+        title = `⚠️ ${overdueTasks.length} ${overdueTasks.length > 1 ? 'ληξιπρόθεσμες εργασίες' : 'ληξιπρόθεσμη εργασία'}`;
+      } else {
+        title = `⚠️ Team overdue tasks`;
+      }
+
+      // ─── Build body ───
+      let body = '';
+      if (personalTasks.length > 0) {
+        body = personalTasks.slice(0, 3).map(t => `- ${t.description}`).join('\n');
+        if (personalTasks.length > 3) {
+          body += `\n+${personalTasks.length - 3} ακόμη`;
+        }
+      }
+      body += teamSection;
 
       const payload = JSON.stringify({
         title,
-        body,
+        body: body.trim(),
         url: 'https://crm.eaivaliotis.gr',
         todayCount: todayTasks.length,
         overdueCount: overdueTasks.length,
       });
 
-try {
-  console.log(`[Push] Sending to user ${sub.user_id}, endpoint: ${sub.subscription.endpoint?.substring(0, 60)}...`);
-  await webpush.sendNotification(sub.subscription, payload, { TTL: 86400 });
-  sent++;
-} catch (err) {
-  console.error(`[Push] Failed for user ${sub.user_id}:`, err.message);
-  if (err.statusCode === 410 || err.statusCode === 404) {
-    await supabase.from('crm_push_subscriptions').delete().eq('user_id', sub.user_id);
-  }
-}
+      try {
+        console.log(`[Push] Sending to user ${sub.user_id}, endpoint: ${sub.subscription.endpoint?.substring(0, 60)}...`);
+        await webpush.sendNotification(sub.subscription, payload, { TTL: 86400 });
+        sent++;
+      } catch (err) {
+        console.error(`[Push] Failed for user ${sub.user_id}:`, err.message);
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          await supabase.from('crm_push_subscriptions').delete().eq('user_id', sub.user_id);
+        }
+      }
     }
 
     console.log(`[Push] Done. Sent: ${sent}, Skipped: ${skipped}`);
@@ -1561,6 +1624,7 @@ try {
     throw err;
   }
 }
+
 
 // Schedule: daily at 08:00 Greece time (05:00 UTC)
 cron.schedule('0 5 * * *', sendDailyTaskReminders);
