@@ -1168,6 +1168,7 @@ router.get('/customers/:code/summary', async (req, res) => {
 
     ]);
 
+    console.log('salesman:', salesmanResult);
     res.json({
     sales:           salesResult.status === 'fulfilled'        ? salesResult.value        : [],
     balance:         balanceResult.status === 'fulfilled'      ? balanceResult.value      : null,
