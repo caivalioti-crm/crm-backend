@@ -925,7 +925,7 @@ router.get('/customers/:code/summary', async (req, res) => {
     // 1. Resolve trdr_id once
     const { data: customers } = await supabase
       .from('stg_soft1_trdr')
-      .select('trdr_id, prccategory, payment, warning')
+      .select('trdr_id, prccategory, payment, warning, salesman_code')
       .eq('trdr_code', code)
       .eq('company', 1000)
       .limit(1);
@@ -945,6 +945,7 @@ router.get('/customers/:code/summary', async (req, res) => {
       profileResult,
       lastSyncResult,
       lastInvoiceResult,
+      salesmanResult,
     ] = await Promise.allSettled([
       
   
@@ -1061,6 +1062,7 @@ router.get('/customers/:code/summary', async (req, res) => {
       const allCodes = [...new Set([
         ...categories.map(c => c.category_code),
         ...categories.map(c => c.subcategory_code).filter(Boolean),
+    
       ])];
 
       const { data: masters } = await supabase
@@ -1153,6 +1155,17 @@ router.get('/customers/:code/summary', async (req, res) => {
       })(),
     ]);
 
+            // Salesman name
+      (async () => {
+        if (!customer.salesman_code) return null;
+        const { data } = await supabase
+          .from('stg_soft1_prsn')
+          .select('NAME')
+          .eq('PRSN', String(customer.salesman_code))
+          .limit(1);
+        const name = data?.[0]?.NAME ?? null;
+        return name ? { code: String(customer.salesman_code), name } : null;
+      })(),
 
     res.json({
     sales:           salesResult.status === 'fulfilled'        ? salesResult.value        : [],
@@ -1165,6 +1178,7 @@ router.get('/customers/:code/summary', async (req, res) => {
     lastInvoiceDate: lastInvoiceResult.status === 'fulfilled'  ? lastInvoiceResult.value  : null,
     payment:         customer.payment  ?? null,
     warning:         customer.warning  ?? null,
+    salesman:        salesmanResult.status === 'fulfilled' ? salesmanResult.value : null,
   });
 
   } catch (err) {
