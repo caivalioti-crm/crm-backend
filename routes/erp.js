@@ -1141,7 +1141,7 @@ router.get('/customers/:code/summary', async (req, res) => {
         return data?.trndate?.slice(0, 10) ?? null;
       })(),
 
-      // Last invoice date
+     // Last invoice date
       (async () => {
         const { data } = await supabase
           .from('stg_soft1_findoc')
@@ -1153,9 +1153,8 @@ router.get('/customers/:code/summary', async (req, res) => {
           .single();
         return data?.trndate?.slice(0, 10) ?? null;
       })(),
-    ]);
 
-            // Salesman name
+      // Salesman name
       (async () => {
         if (!customer.salesman_code) return null;
         const { data } = await supabase
@@ -1166,6 +1165,8 @@ router.get('/customers/:code/summary', async (req, res) => {
         const name = data?.[0]?.NAME ?? null;
         return name ? { code: String(customer.salesman_code), name } : null;
       })(),
+
+    ]);
 
     res.json({
     sales:           salesResult.status === 'fulfilled'        ? salesResult.value        : [],
