@@ -1112,21 +1112,24 @@ router.get('/customers/:code/summary', async (req, res) => {
         const shopProfile = sp?.[0] ?? null;
         const competitorInfo = ci?.[0] ?? null;
         if (!shopProfile && !competitorInfo) return null;
-        return {
-          shop_profile: shopProfile ? {
-            shop_type: shopProfile.shop_type,
-            number_of_employees: shopProfile.number_of_employees,
-            shop_size_m2: shopProfile.shop_size_m2,
-            stock_behavior: shopProfile.stock_behavior,
-          } : null,
-          competitor_info: competitorInfo ? {
-            main_competitor: competitorInfo.main_competitor,
-            other_competitors: competitorInfo.other_competitors,
-            estimated_monthly_spend: competitorInfo.estimated_monthly_spend,
-            competitor_strengths: competitorInfo.competitor_strengths,
-            switch_reason: competitorInfo.switch_reason,
-          } : null,
-        };
+          return {
+            shop_profile: shopProfile ? {
+              shop_type: shopProfile.shop_type,
+              number_of_employees: shopProfile.number_of_employees,
+              shop_size_m2: shopProfile.shop_size_m2,
+              stock_behavior: shopProfile.stock_behavior,
+              vehicle_types: shopProfile.vehicle_types ?? [],
+              vehicle_brands: shopProfile.vehicle_brands ?? [],
+            } : null,
+            competitor_info: competitorInfo ? {
+              competitors_v2: competitorInfo.competitors_v2 ?? [],
+              main_competitor: competitorInfo.main_competitor,
+              other_competitors: competitorInfo.other_competitors,
+              estimated_monthly_spend: competitorInfo.estimated_monthly_spend,
+              competitor_strengths: competitorInfo.competitor_strengths,
+              switch_reason: competitorInfo.switch_reason,
+            } : null,
+          };
       })(),
 
       // Last sync date
