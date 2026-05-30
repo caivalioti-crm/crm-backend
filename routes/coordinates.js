@@ -13,14 +13,16 @@ const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 router.get('/coordinates', async (req, res) => {
   try {
     const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
-    const { salesman_code, area, city } = req.query;
+    const { salesman_code, area, city, customer_code } = req.query;
 
     // Build customer filter
     let custQuery = supabase
       .from('vw_crm_customers')
       .select('code, name, city, area, address, salesman_code');
 
-    if (isRep) {
+if (customer_code) {
+      custQuery = custQuery.eq('code', String(customer_code));
+    } else if (isRep) {
       // Reps only see their own
       const { data: profile } = await supabase
         .from('crm_user_profiles')
