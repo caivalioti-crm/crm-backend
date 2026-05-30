@@ -110,8 +110,9 @@ router.patch('/coordinates/:customer_code', async (req, res) => {
         accuracy_meters: accuracy_meters ?? 10,
         captured_by: req.user.id,
         captured_at: new Date().toISOString(),
-        notes: null,
-      }, { onConflict: 'customer_code' });
+    coord_source: 'map',
+    notes: null,
+  }, { onConflict: 'customer_code' });
 
     if (error) throw error;
     res.json({ success: true });
