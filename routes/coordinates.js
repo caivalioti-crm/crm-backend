@@ -44,7 +44,7 @@ if (customer_code) {
 
     const { data: coords, error: coordErr } = await supabase
       .from('crm_customer_coordinates')
-      .select('customer_code, lat, lng, accuracy_meters, captured_by, captured_at')
+      .select('customer_code, lat, lng, accuracy_meters, captured_by, captured_at, coord_source')
       .in('customer_code', codes);
     if (coordErr) throw coordErr;
 
@@ -64,6 +64,7 @@ if (customer_code) {
         accuracy_meters: coord?.accuracy_meters ?? null,
         captured_by: coord?.captured_by ?? null,
         captured_at: coord?.captured_at ?? null,
+        coord_source: coord?.coord_source ?? null,
         has_coords: !!coord,
       };
     });
