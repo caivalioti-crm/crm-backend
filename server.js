@@ -1829,13 +1829,14 @@ app.post('/api/customers/:code/coordinates', authMiddleware, async (req, res) =>
   const { error } = await supabase
     .from('crm_customer_coordinates')
     .upsert({
-      customer_code: code,
-      lat,
-      lng,
-      accuracy_meters: accuracy_meters ?? null,
-      captured_by: req.user.id,
-      captured_at: new Date().toISOString(),
-    }, { onConflict: 'customer_code' });
+          customer_code: code,
+          lat,
+          lng,
+          accuracy_meters: accuracy_meters ?? null,
+          captured_by: req.user.id,
+          captured_at: new Date().toISOString(),
+          coord_source: 'gps',
+        }, { onConflict: 'customer_code' });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
 });
