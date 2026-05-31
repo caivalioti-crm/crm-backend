@@ -939,4 +939,59 @@ router.post('/suggest', async (req, res) => {
   }
 });
 
+// ─── HOTELS ───────────────────────────────────────────────────────────────────
+
+router.get('/hotels', async (req, res) => {
+  try {
+    const { area } = req.query;
+    let query = supabase
+      .from('crm_rep_hotels')
+      .select('*')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false });
+    if (area) query = query.eq('area', area);
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data ?? []);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/hotels', async (req, res) => {
+  try {
+    const { area, name, lat, lng } = req.body;
+    if (!area || !name || !lat || !lng) {
+      return res.status(400).json({ error: 'area, name, lat, lng required' });
+    }
+    const { data, error } = await supabase
+      .from('crm_rep_hotels')
+      .insert({ user_id: req.user.id, area, name, lat, lng })
+      .select()
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/hotels/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase
+      .from('crm_rep_hotels')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', req.user.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
