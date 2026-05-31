@@ -332,6 +332,7 @@ router.post('/suggest', async (req, res) => {
       .from('vw_crm_customers')
       .select('code, name, city, area, address, salesman_code')
       .eq('salesman_code', Number(salesmanCode))
+      .eq('is_active', true)
       .in('area', neededAreas);
 
     if (custError) throw custError;
