@@ -930,7 +930,9 @@ router.post('/suggest', async (req, res) => {
         days_since_visit: c.days_since_visit,
         last_visit_date: c.last_visit_date,
         urgency_score: Math.round(c.urgency_score * 100) / 100,
-      }));
+      lat: c.lat,
+      lng: c.lng,
+    }));
 
     res.json({ week_start, days, unscheduled });
 
