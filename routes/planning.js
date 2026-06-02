@@ -997,4 +997,63 @@ router.delete('/hotels/:id', async (req, res) => {
   }
 });
 
+// POST /api/planning/planned-visits/shift
+// Bulk-shift planned visits κατά N μέρες.
+// Body: { from, to, day_delta, include_fixed, user_id }
+router.post('/planned-visits/shift', async (req, res) => {
+  try {
+    const { from, to, day_delta, include_fixed = false, user_id } = req.body;
+    if (!from || !to || !Number.isInteger(day_delta)) {
+      return res.status(400).json({ error: 'from, to, day_delta (integer) required' });
+    }
+    if (day_delta === 0) return res.json({ moved: 0, skipped_fixed: 0 });
+
+    const userId = getUserFilter(req, user_id);
+
+    let query = supabase
+      .from('crm_planned_visits')
+      .select('id, planned_date, is_fixed_appointment, status')
+      .gte('planned_date', from)
+      .lte('planned_date', to);
+    if (userId) query = query.eq('user_id', userId);
+
+    const { data: rows, error: fetchErr } = await query;
+    if (fetchErr) throw fetchErr;
+
+    const active = (rows ?? []).filter(r => r.status !== 'completed');
+    const toMove = active.filter(r => include_fixed || !r.is_fixed_appointment);
+    const skippedFixed = active.filter(r => !include_fixed && r.is_fixed_appointment).length;
+
+    const shiftDate = (iso, delta) => {
+      const d = new Date(iso + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + delta);
+      return d.toISOString().slice(0, 10);
+    };
+    const mondayOf = (iso) => {
+      const d = new Date(iso + 'T00:00:00Z');
+      const dow = d.getUTCDay();
+      const diff = dow === 0 ? -6 : 1 - dow;
+      d.setUTCDate(d.getUTCDate() + diff);
+      return d.toISOString().slice(0, 10);
+    };
+
+    const nowIso = new Date().toISOString();
+    let moved = 0;
+    for (const r of toMove) {
+      const newDate = shiftDate(r.planned_date.slice(0, 10), day_delta);
+      const { error: upErr } = await supabase
+        .from('crm_planned_visits')
+        .update({ planned_date: newDate, week_start: mondayOf(newDate), updated_at: nowIso })
+        .eq('id', r.id);
+      if (upErr) throw upErr;
+      moved++;
+    }
+
+    res.json({ moved, skipped_fixed: skippedFixed });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
