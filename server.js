@@ -77,6 +77,7 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
   const categories = typeof req.body.categories === 'string' ? JSON.parse(req.body.categories) : (req.body.categories || []);
   const shop_profile = typeof req.body.shop_profile === 'string' ? JSON.parse(req.body.shop_profile) : (req.body.shop_profile || null);
   const competition_info = typeof req.body.competition_info === 'string' ? JSON.parse(req.body.competition_info) : (req.body.competition_info || null);
+  const outcome = req.body.outcome || null;
 
   if (!customer_code || !visit_date) {
     return res.status(400).json({ error: 'customer_code and visit_date are required' });
@@ -103,6 +104,7 @@ app.post('/api/visits', authMiddleware, upload.single('voice_memo'), async (req,
       visit_type: visit_type || 'in-person',
       notes: notes || '',
       voice_memo_path,
+      outcome,
       shop_profile: (shop_profile && Object.values(shop_profile).some(v => v !== undefined && v !== '' && v !== null)) ? {
       shop_type: shop_profile.shop_type || null,
       number_of_employees: shop_profile.numberOfEmployees ?? null,
@@ -399,12 +401,12 @@ app.delete('/api/visits/:id', authMiddleware, async (req, res) => {
 
 app.patch('/api/visits/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { notes, visit_type, visit_date, visit_time, categories } = req.body;
+  const { notes, visit_type, visit_date, visit_time, categories, outcome } = req.body;
   const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
   let query = supabase
     .from('crm_visits')
-    .update({ notes, visit_type, visit_date, visit_time })
+    .update({ notes, visit_type, visit_date, visit_time, ...(outcome !== undefined ? { outcome } : {}) })
     .eq('id', id);
 
   if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
