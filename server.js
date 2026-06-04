@@ -1803,28 +1803,33 @@ app.get('/api/tasks/due', authMiddleware, async (req, res) => {
     const visitIds = (visits ?? []).map(v => v.id);
     if (visitIds.length === 0) return res.json({ today: [], overdue: [], total: 0 });
 
-    const { data: tasks, error: tasksError } = await supabase
-      .from('crm_visit_tasks')
-      .select('id, visit_id, description, reminder_date, status')
-      .in('visit_id', visitIds)
-      .not('status', 'eq', 'completed')
-      .not('reminder_date', 'is', null)
-      .lte('reminder_date', today);
-
-    if (tasksError) throw tasksError;
+    // Chunk visitIds to avoid Supabase 16KB URL limit
+    const CHUNK = 50;
+    let tasks = [];
+    for (let i = 0; i < visitIds.length; i += CHUNK) {
+      const chunk = visitIds.slice(i, i + CHUNK);
+      const { data: chunkTasks } = await supabase
+        .from('crm_visit_tasks')
+        .select('id, visit_id, description, reminder_date, status')
+        .in('visit_id', chunk)
+        .not('status', 'eq', 'completed')
+        .not('reminder_date', 'is', null)
+        .lte('reminder_date', today);
+      tasks = [...tasks, ...(chunkTasks ?? [])];
+    }
 
     const visitMap = new Map((visits ?? []).map(v => [v.id, v]));
 
-    const enriched = (tasks ?? []).map(t => ({
+    const enriched = tasks.map(t => ({
       ...t,
       visit: visitMap.get(t.visit_id) ?? null,
       is_overdue: t.reminder_date < today,
     }));
 
     res.json({
-      today: enriched.filter(t => t.reminder_date === today),
+      today:   enriched.filter(t => t.reminder_date === today),
       overdue: enriched.filter(t => t.reminder_date < today),
-      total: enriched.length,
+      total:   enriched.length,
     });
   } catch (err) {
     console.error(err);
