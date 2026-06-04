@@ -230,50 +230,68 @@ app.get('/customers/:customerCode/neglected-categories', authMiddleware, async (
 });
 
 app.get('/api/visits', authMiddleware, async (req, res) => {
-  console.log('GET /api/visits query:', req.query);
   const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
-  const { customer_code } = req.query;
+  const { customer_code, from, to } = req.query;
 
-  let query = supabase
-    .from('crm_visits')
-    .select(`
-      *,
-      crm_visit_tasks (*),
-      crm_visit_categories (*),
-      crm_visit_comments (*)
-    `)
-    .order('visit_date', { ascending: false })
-    .order('created_at', { ascending: false });
+  try {
+    // Step 1: Fetch visits only (no nested)
+    let query = supabase
+      .from('crm_visits')
+      .select('*')
+      .order('visit_date', { ascending: false })
+      .order('created_at', { ascending: false });
 
-  if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
-    query = query.eq('salesman_code', req.user.salesman_code);
-  }
-
-  if (customer_code) query = query.eq('customer_code', customer_code);
-
-  const { from, to } = req.query;
+    if (!FULL_ACCESS_ROLES.includes(req.user.role)) {
+      query = query.eq('salesman_code', req.user.salesman_code);
+    }
+    if (customer_code) query = query.eq('customer_code', customer_code);
     if (from) query = query.gte('visit_date', from);
-    if (to) query = query.lte('visit_date', to);
+    if (to)   query = query.lte('visit_date', to);
 
-  const { data, error } = await query;
+    const { data: visits, error } = await query;
+    if (error) throw error;
+    if (!visits || visits.length === 0) return res.json([]);
 
-  if (error) {
-    console.error('Visits fetch error:', error);
-    return res.status(500).json({ error: error.message });
+    // Step 2: Fetch nested data in chunks of 50
+    const visitIds = visits.map(v => v.id);
+    const CHUNK = 50;
+    let allTasks = [], allCategories = [], allComments = [];
+
+    for (let i = 0; i < visitIds.length; i += CHUNK) {
+      const chunk = visitIds.slice(i, i + CHUNK);
+      const [t, c, cm] = await Promise.all([
+        supabase.from('crm_visit_tasks').select('*').in('visit_id', chunk),
+        supabase.from('crm_visit_categories').select('*').in('visit_id', chunk),
+        supabase.from('crm_visit_comments').select('*').in('visit_id', chunk),
+      ]);
+      allTasks      = [...allTasks,      ...(t.data  || [])];
+      allCategories = [...allCategories, ...(c.data  || [])];
+      allComments   = [...allComments,   ...(cm.data || [])];
+    }
+
+    // Step 3: Merge
+    const merged = visits.map(v => ({
+      ...v,
+      crm_visit_tasks:       allTasks.filter(x => x.visit_id === v.id),
+      crm_visit_categories:  allCategories.filter(x => x.visit_id === v.id),
+      crm_visit_comments:    allComments.filter(x => x.visit_id === v.id),
+    }));
+
+    // Step 4: Add owner names (same as before)
+    const { data: profiles } = await supabase
+      .from('crm_user_profiles')
+      .select('id, full_name');
+    const profileMap = new Map((profiles ?? []).map(p => [p.id, p.full_name]));
+
+    res.json(merged.map(v => ({
+      ...v,
+      owner_name: profileMap.get(v.user_id) ?? v.salesman_code ?? 'Unknown',
+    })));
+
+  } catch (err) {
+    console.error('Visits fetch error:', err);
+    res.status(500).json({ error: err.message });
   }
-
-  const { data: profiles } = await supabase
-    .from('crm_user_profiles')
-    .select('id, full_name');
-
-  const profileMap = new Map((profiles ?? []).map(p => [p.id, p.full_name]));
-
-  const visitsWithNames = data.map(v => ({
-    ...v,
-    owner_name: profileMap.get(v.user_id) ?? v.salesman_code ?? 'Unknown',
-  }));
-
-  res.json(visitsWithNames);
 });
 
 app.get('/api/visits/:id/voice-memo', authMiddleware, async (req, res) => {
