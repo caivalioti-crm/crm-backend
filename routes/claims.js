@@ -3,10 +3,7 @@ const router = express.Router();
 const { supabase } = require('../supabaseClient'); // ← shared client
 const { randomUUID } = require('crypto');           // ← built-in, no install needed
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+
 
 // ─── GET /api/claims ───────────────────────────────────────
 router.get('/', async (req, res) => {
