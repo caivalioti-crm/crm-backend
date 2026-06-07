@@ -1200,7 +1200,8 @@ router.get('/reps', async (req, res) => {
       .from('crm_user_profiles')
       .select('id, full_name, salesman_code, role')
       .in('role', ['rep', 'manager', 'exec', 'admin'])
-      .order('full_name');
+      .not('salesman_code', 'is', null)
+      .order('full_name')
     if (error) throw error;
     res.json(data ?? []);
   } catch (err) {
