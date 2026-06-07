@@ -1213,19 +1213,15 @@ router.get('/revenue-map', async (req, res) => {
   try {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
-    const { data, error } = await supabase
-      .from('mv_crm_sku_sales')
-      .select('customer_code, netlineval')
-      .gte('trndate', from)
-      .lte('trndate', to);
+    // Uses vw_crm_sales via SQL function — correctly includes credit series (7063/7064/9962)
+    const { data, error } = await supabase.rpc('get_customer_revenue_map', {
+      p_from: from,
+      p_to: to,
+    });
     if (error) throw error;
-    const totals = new Map();
-    for (const row of data ?? []) {
-      const c = row.customer_code;
-      totals.set(c, (totals.get(c) ?? 0) + Number(row.netlineval ?? 0));
-    }
-    res.json([...totals.entries()].map(([customer_code, total_revenue]) => ({
-      customer_code, total_revenue: Math.round(total_revenue * 100) / 100
+    res.json((data ?? []).map(row => ({
+      customer_code: row.customer_code,
+      total_revenue: Math.round(Number(row.total_revenue) * 100) / 100,
     })));
   } catch (err) {
     console.error(err);
