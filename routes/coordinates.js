@@ -18,7 +18,7 @@ router.get('/coordinates', async (req, res) => {
     // Build customer filter
     let custQuery = supabase
       .from('vw_crm_customers')
-      .select('code, name, city, area, address, salesman_code');
+      .select('code, name, city, area, address, zip, salesman_code');
 
 if (customer_code) {
       custQuery = custQuery.eq('code', String(customer_code));
@@ -58,6 +58,7 @@ if (customer_code) {
         city: c.city,
         area: c.area,
         address: c.address,
+        zip: c.zip ?? null,
         salesman_code: c.salesman_code,
         lat: coord?.lat ?? null,
         lng: coord?.lng ?? null,
