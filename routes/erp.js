@@ -1209,4 +1209,28 @@ router.get('/reps', async (req, res) => {
   }
 });
 
+router.get('/revenue-map', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ error: 'Missing from/to' });
+    const { data, error } = await supabase
+      .from('mv_crm_sku_sales')
+      .select('customer_code, netlineval')
+      .gte('trndate', from)
+      .lte('trndate', to);
+    if (error) throw error;
+    const totals = new Map();
+    for (const row of data ?? []) {
+      const c = row.customer_code;
+      totals.set(c, (totals.get(c) ?? 0) + Number(row.netlineval ?? 0));
+    }
+    res.json([...totals.entries()].map(([customer_code, total_revenue]) => ({
+      customer_code, total_revenue: Math.round(total_revenue * 100) / 100
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
