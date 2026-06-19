@@ -46,6 +46,7 @@ app.use(express.json());
 app.use('/api/erp', authMiddleware, erpRoutes);
 app.use('/api/planning', authMiddleware, planningRouter);
 app.use('/api', authMiddleware, require('./routes/coordinates'));
+app.use('/api', authMiddleware, require('./routes/intelligence'));
 app.use('/api/claims', authMiddleware, claimsRouter);
 app.get('/api/me', authMiddleware, async (req, res) => {
   res.json(req.user);
