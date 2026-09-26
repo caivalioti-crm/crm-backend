@@ -1200,6 +1200,10 @@ router.get('/reps', async (req, res) => {
       .from('crm_user_profiles')
       .select('id, full_name, salesman_code, role')
       .in('role', ['rep', 'manager', 'exec', 'admin'])
+      // is_active is the real test. salesman_code happens to be cleared when a
+      // rep is offboarded, but that is a convention, not a guarantee — a
+      // disabled account that kept its code would otherwise leak in here.
+      .eq('is_active', true)
       .not('salesman_code', 'is', null)
       .order('full_name')
     if (error) throw error;
