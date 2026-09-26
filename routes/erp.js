@@ -13,11 +13,17 @@ const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 // Revenue attribution mode. 'sales' credits the rep who wrote the invoice;
 // 'book' credits whoever holds the customer now, which is what the dashboard
 // did historically and what silently re-credited a departed rep's revenue to
-// their successor. 'sales' is the default; anything unrecognised falls back to
-// it rather than quietly reverting to the old behaviour.
+// their successor.
+//
+// This defaults to 'book' — the OLD behaviour — on purpose. The product default
+// is 'sales' and lives in the dashboard, which always sends mode explicitly.
+// Keeping the API default at 'book' means a deployed frontend that predates the
+// toggle keeps showing exactly what it showed yesterday, so backend and frontend
+// can ship in either order without anyone's numbers moving unannounced.
+// Do not "fix" this to 'sales' unless every caller sends the parameter.
 const ATTRIBUTION_MODES = ['sales', 'book'];
 const attributionMode = (req) =>
-  ATTRIBUTION_MODES.includes(req.query.mode) ? req.query.mode : 'sales';
+  ATTRIBUTION_MODES.includes(req.query.mode) ? req.query.mode : 'book';
 
 // Customers list
 router.get('/customers', async (req, res) => {
