@@ -10,6 +10,15 @@ const upload = multer({
 
 const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
 
+// Revenue attribution mode. 'sales' credits the rep who wrote the invoice;
+// 'book' credits whoever holds the customer now, which is what the dashboard
+// did historically and what silently re-credited a departed rep's revenue to
+// their successor. 'sales' is the default; anything unrecognised falls back to
+// it rather than quietly reverting to the old behaviour.
+const ATTRIBUTION_MODES = ['sales', 'book'];
+const attributionMode = (req) =>
+  ATTRIBUTION_MODES.includes(req.query.mode) ? req.query.mode : 'sales';
+
 // Customers list
 router.get('/customers', async (req, res) => {
   try {
@@ -244,9 +253,11 @@ router.get('/sales/monthly', async (req, res) => {
     const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
     const salesmanCode = isRep ? req.user.salesman_code : (req.query.salesmanCode || null);
 
+    const mode = attributionMode(req);
+
     const { data: findocs, error } = await supabase
       .from('stg_soft1_findoc')
-      .select('trndate, series, trdr, netamnt')
+      .select('trndate, series, trdr, netamnt, salesman_code, trdbranch')
       .eq('company', 1000)
       .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
       .gte('trndate', from)
@@ -255,18 +266,35 @@ router.get('/sales/monthly', async (req, res) => {
 
     if (error) throw error;
 
+    // book mode needs the set of customers this rep holds; sales mode needs
+    // every customer's rep, because branch documents carry no salesman and
+    // fall back to the parent customer's.
     let allowedTrdrs = null;
+    let custRep = null;
     if (salesmanCode) {
-      const { data: customers } = await supabase
-        .from('vw_crm_customers')
-        .select('trdr_id')
-        .eq('salesman_code', salesmanCode);
-      allowedTrdrs = new Set((customers ?? []).map(c => String(c.trdr_id)));
+      if (mode === 'sales') {
+        const { data: customers } = await supabase
+          .from('vw_crm_customers')
+          .select('trdr_id, salesman_code');
+        custRep = new Map((customers ?? []).map(c => [String(c.trdr_id), c.salesman_code]));
+      } else {
+        const { data: customers } = await supabase
+          .from('vw_crm_customers')
+          .select('trdr_id')
+          .eq('salesman_code', salesmanCode);
+        allowedTrdrs = new Set((customers ?? []).map(c => String(c.trdr_id)));
+      }
     }
 
     const byMonth = {};
     for (const row of findocs ?? []) {
-      if (allowedTrdrs && !allowedTrdrs.has(String(row.trdr))) continue;
+      if (salesmanCode) {
+        if (mode === 'sales') {
+          const effective = row.salesman_code
+            ?? (row.trdbranch != null ? custRep.get(String(row.trdr)) : null);
+          if (String(effective) !== String(salesmanCode)) continue;
+        } else if (!allowedTrdrs.has(String(row.trdr))) continue;
+      }
       const month = (row.trndate ?? '').slice(0, 7);
       if (!month) continue;
       const amount = Number(row.netamnt ?? 0);
@@ -296,6 +324,7 @@ router.get('/sales', async (req, res) => {
       p_from: from || '2022-01-01',
       p_to:   to   || new Date().toISOString().split('T')[0],
       p_salesman_code: salesmanCode,
+      p_mode: attributionMode(req),
     });
 
     if (error) {
@@ -347,11 +376,13 @@ router.get('/sales/by-area', async (req, res) => {
         p_from: from || '2022-01-01',
         p_to:   to   || new Date().toISOString().split('T')[0],
         p_salesman_code: salesmanCode,
+        p_mode: attributionMode(req),
       }),
       supabase.rpc('get_sales_by_area', {
         p_from: compareFrom || '2022-01-01',
         p_to:   compareTo   || new Date().toISOString().split('T')[0],
         p_salesman_code: salesmanCode,
+        p_mode: attributionMode(req),
       }),
     ]);
 
@@ -389,12 +420,14 @@ router.get('/sales/by-city', async (req, res) => {
         p_to:   to   || new Date().toISOString().split('T')[0],
         p_area: area || null,
         p_salesman_code: salesmanCode,
+        p_mode: attributionMode(req),
       }),
       supabase.rpc('get_sales_by_city', {
         p_from: compareFrom || '2022-01-01',
         p_to:   compareTo   || new Date().toISOString().split('T')[0],
         p_area: area || null,
         p_salesman_code: salesmanCode,
+        p_mode: attributionMode(req),
       }),
     ]);
 
