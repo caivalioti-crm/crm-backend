@@ -324,7 +324,15 @@ router.get('/sales', async (req, res) => {
   try {
     const { from, to } = req.query;
     const isRep = !FULL_ACCESS_ROLES.includes(req.user.role);
-    const salesmanCode = isRep ? req.user.salesman_code : null;
+    // A rep is always pinned to their own code. A privileged user may view as a
+    // specific rep, which arrives as ?salesmanCode — this endpoint was the only
+    // one ignoring it (by-area, by-city and monthly all honour it), so "view as
+    // rep" silently returned company-wide totals here. That also made the
+    // attribution toggle look broken for admins: with no rep filter, book and
+    // sales are identical by definition.
+    const salesmanCode = isRep
+      ? req.user.salesman_code
+      : (req.query.salesmanCode || null);
 
     const { data, error } = await supabase.rpc('get_sales_summary', {
       p_from: from || '2022-01-01',
