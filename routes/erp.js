@@ -423,8 +423,26 @@ router.get('/sales/monthly', async (req, res) => {
       }
     }
 
+    // The customers on the CRM exclusion list stay out of every revenue figure
+    // (get_sales_summary does the same), so the months add up to the totals.
+    const { data: excluded, error: exError } = await supabase
+      .from('crm_excluded_customers')
+      .select('trdr_code');
+    if (exError) throw exError;
+    let excludedTrdrs = new Set();
+    if ((excluded ?? []).length > 0) {
+      const { data: exTrdrs, error: exTrdrError } = await supabase
+        .from('stg_soft1_trdr')
+        .select('trdr_id')
+        .eq('company', 1000)
+        .in('trdr_code', excluded.map(e => e.trdr_code));
+      if (exTrdrError) throw exTrdrError;
+      excludedTrdrs = new Set((exTrdrs ?? []).map(t => String(t.trdr_id)));
+    }
+
     const byMonth = {};
     for (const row of findocs ?? []) {
+      if (excludedTrdrs.has(String(row.trdr))) continue;
       if (salesmanCode) {
         if (mode === 'sales') {
           const effective = row.salesman_code
