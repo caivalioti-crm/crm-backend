@@ -101,13 +101,15 @@ async function fetchNewItemIds(since) {
 // Per document, the share of its line value that is NOT new items. Document
 // amounts are header NETAMNT, so they are scaled by this rather than rebuilt
 // from lines: the same rule as crm_sales_docs_filtered() in the database.
+// The view adds a live computation for documents the nightly matview has not
+// seen yet, so today's invoices are not counted as 100% old items.
 async function fetchKeepShare(findocIds, since) {
   const cutYear = Number(since.slice(0, 4));
   const totals = new Map();
   const BATCH = 100;
   for (let i = 0; i < findocIds.length; i += BATCH) {
     const { data, error } = await supabase
-      .from('mv_crm_doc_item_years')
+      .from('vw_crm_doc_item_years')
       .select('findoc, act_year, lineval')
       .in('findoc', findocIds.slice(i, i + BATCH));
     if (error) throw error;
