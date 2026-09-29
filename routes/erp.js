@@ -25,6 +25,41 @@ const ATTRIBUTION_MODES = ['sales', 'book'];
 const attributionMode = (req) =>
   ATTRIBUTION_MODES.includes(req.query.mode) ? req.query.mode : 'book';
 
+// A Softone person code can outlive the person. Code 1721 was ΒΑΚΟΥΦΤΣΗΣ until
+// 2026-09-26 and the temp cover account after it, and every invoice either of
+// them wrote is stamped 1721 — so filtering by code alone credits the newcomer
+// with their predecessor's whole year.
+//
+// crm_rep_code_assignments records who held a code and when. In 'sales' mode we
+// clamp the requested window to the CURRENT holder's tenure, which keeps the
+// four revenue endpoints consistent without changing any RPC signature or
+// asking the frontend for anything extra.
+//
+// Only 'sales' mode. 'book' asks "what did the customers I hold now buy", which
+// has no time dimension — clamping it would wrongly truncate the history of an
+// inherited book, which is the very thing that view exists to show.
+async function tenureWindow(salesmanCode, mode) {
+  if (mode !== 'sales' || !salesmanCode) return null;
+  const { data, error } = await supabase
+    .from('crm_rep_code_assignments')
+    .select('valid_from, valid_to, display_name')
+    .eq('salesman_code', String(salesmanCode))
+    .is('valid_to', null)
+    .maybeSingle();
+  if (error || !data) return null;          // no tenure recorded → behave as before
+  return data;
+}
+
+// Returns the window narrowed to the tenure, or null when the two do not
+// overlap at all (e.g. the comparison period predates a temp account, in which
+// case that rep genuinely has nothing to show for it).
+function clampToTenure(from, to, tenure) {
+  if (!tenure) return { from, to };
+  const lo = tenure.valid_from && tenure.valid_from > from ? tenure.valid_from : from;
+  const hi = tenure.valid_to   && tenure.valid_to   < to   ? tenure.valid_to   : to;
+  return lo > hi ? null : { from: lo, to: hi };
+}
+
 // Customers list
 router.get('/customers', async (req, res) => {
   try {
@@ -260,14 +295,16 @@ router.get('/sales/monthly', async (req, res) => {
     const salesmanCode = isRep ? req.user.salesman_code : (req.query.salesmanCode || null);
 
     const mode = attributionMode(req);
+    const win = clampToTenure(from, to, await tenureWindow(salesmanCode, mode));
+    if (!win) return res.json([]);
 
     const { data: findocs, error } = await supabase
       .from('stg_soft1_findoc')
       .select('trndate, series, trdr, netamnt, salesman_code, trdbranch')
       .eq('company', 1000)
       .in('series', [...INVOICE_SERIES, ...CREDIT_SERIES])
-      .gte('trndate', from)
-      .lt('trndate', to)
+      .gte('trndate', win.from)
+      .lt('trndate', win.to)
       .limit(100000);
 
     if (error) throw error;
@@ -334,11 +371,20 @@ router.get('/sales', async (req, res) => {
       ? req.user.salesman_code
       : (req.query.salesmanCode || null);
 
+    const mode = attributionMode(req);
+    const tenure = await tenureWindow(salesmanCode, mode);
+    const win = clampToTenure(
+      from || '2022-01-01',
+      to   || new Date().toISOString().split('T')[0],
+      tenure
+    );
+    if (!win) return res.json([]);   // window lies entirely outside this holder's tenure
+
     const { data, error } = await supabase.rpc('get_sales_summary', {
-      p_from: from || '2022-01-01',
-      p_to:   to   || new Date().toISOString().split('T')[0],
+      p_from: win.from,
+      p_to:   win.to,
       p_salesman_code: salesmanCode,
-      p_mode: attributionMode(req),
+      p_mode: mode,
     });
 
     if (error) {
@@ -385,19 +431,20 @@ router.get('/sales/by-area', async (req, res) => {
       ? req.user.salesman_code 
       : (req.query.salesmanCode || null);
 
+    const mode = attributionMode(req);
+    const tenure = await tenureWindow(salesmanCode, mode);
+    const winNow = clampToTenure(from || '2022-01-01', to || new Date().toISOString().split('T')[0], tenure);
+    const winCmp = clampToTenure(compareFrom || '2022-01-01', compareTo || new Date().toISOString().split('T')[0], tenure);
+
     const [current, compare] = await Promise.all([
-      supabase.rpc('get_sales_by_area', {
-        p_from: from || '2022-01-01',
-        p_to:   to   || new Date().toISOString().split('T')[0],
-        p_salesman_code: salesmanCode,
-        p_mode: attributionMode(req),
-      }),
-      supabase.rpc('get_sales_by_area', {
-        p_from: compareFrom || '2022-01-01',
-        p_to:   compareTo   || new Date().toISOString().split('T')[0],
-        p_salesman_code: salesmanCode,
-        p_mode: attributionMode(req),
-      }),
+      winNow ? supabase.rpc('get_sales_by_area', {
+        p_from: winNow.from, p_to: winNow.to,
+        p_salesman_code: salesmanCode, p_mode: mode,
+      }) : Promise.resolve({ data: [] }),
+      winCmp ? supabase.rpc('get_sales_by_area', {
+        p_from: winCmp.from, p_to: winCmp.to,
+        p_salesman_code: salesmanCode, p_mode: mode,
+      }) : Promise.resolve({ data: [] }),
     ]);
 
     if (current.error) return res.status(500).json({ error: current.error.message });
@@ -428,21 +475,20 @@ router.get('/sales/by-city', async (req, res) => {
       ? req.user.salesman_code 
       : (req.query.salesmanCode || null);
 
+    const mode = attributionMode(req);
+    const tenure = await tenureWindow(salesmanCode, mode);
+    const winNow = clampToTenure(from || '2022-01-01', to || new Date().toISOString().split('T')[0], tenure);
+    const winCmp = clampToTenure(compareFrom || '2022-01-01', compareTo || new Date().toISOString().split('T')[0], tenure);
+
     const [current, compare] = await Promise.all([
-      supabase.rpc('get_sales_by_city', {
-        p_from: from || '2022-01-01',
-        p_to:   to   || new Date().toISOString().split('T')[0],
-        p_area: area || null,
-        p_salesman_code: salesmanCode,
-        p_mode: attributionMode(req),
-      }),
-      supabase.rpc('get_sales_by_city', {
-        p_from: compareFrom || '2022-01-01',
-        p_to:   compareTo   || new Date().toISOString().split('T')[0],
-        p_area: area || null,
-        p_salesman_code: salesmanCode,
-        p_mode: attributionMode(req),
-      }),
+      winNow ? supabase.rpc('get_sales_by_city', {
+        p_from: winNow.from, p_to: winNow.to, p_area: area || null,
+        p_salesman_code: salesmanCode, p_mode: mode,
+      }) : Promise.resolve({ data: [] }),
+      winCmp ? supabase.rpc('get_sales_by_city', {
+        p_from: winCmp.from, p_to: winCmp.to, p_area: area || null,
+        p_salesman_code: salesmanCode, p_mode: mode,
+      }) : Promise.resolve({ data: [] }),
     ]);
 
     if (current.error) return res.status(500).json({ error: current.error.message });
