@@ -7,7 +7,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec'];
+// `coords` is included so the coordinate-cleanup user (Periklis Christou) sees
+// and can edit ALL customers' coordinates — it is scoped nowhere by salesman.
+const FULL_ACCESS_ROLES = ['admin', 'manager', 'exec', 'coords'];
 
 // GET /api/coordinates-by-rep?salesman_code=29&area=ΘΕΣΣΑΛΟΝΙΚΗ&city=ΠΟΛΥΓΥΡΟΣ
 router.get('/coordinates', async (req, res) => {
@@ -118,6 +120,49 @@ router.patch('/coordinates/:customer_code', async (req, res) => {
 
     if (error) throw error;
     res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/coordinate-tiers
+// Returns the invoice-CADENCE tier (0–4) per customer — the same tier Smart
+// Planning uses (mv_crm_customer_tier). Deliberately NO revenue/money: only the
+// frequency tier + raw invoice count, so a coords-role user can prioritise
+// which customers to geolocate first without ever seeing sales figures.
+//   T0 Ανενεργός · T1 Σπάνιος · T2 Περιστασιακός · T3 Τακτικός · T4 Εβδομαδιαίος
+router.get('/coordinate-tiers', async (req, res) => {
+  try {
+    // mv_crm_customer_tier.customer_code is actually the ERP trdr_id.
+    const { data: tiers, error: tierErr } = await supabase
+      .from('mv_crm_customer_tier')
+      .select('customer_code, tier, total_invoices_6m')
+      .limit(5000);
+    if (tierErr) throw tierErr;
+
+    // Map trdr_id → trdr_code (the customer_code the coordinates API uses).
+    const { data: trdrs, error: trdrErr } = await supabase
+      .from('stg_soft1_trdr')
+      .select('trdr_id, trdr_code')
+      .eq('company', 1000)
+      .limit(10000);
+    if (trdrErr) throw trdrErr;
+
+    const idToCode = new Map((trdrs ?? []).map(t => [String(t.trdr_id), String(t.trdr_code)]));
+
+    const result = [];
+    for (const t of tiers ?? []) {
+      const code = idToCode.get(String(t.customer_code));
+      if (!code) continue;
+      result.push({
+        customer_code: code,
+        tier: t.tier ?? 0,
+        invoices_6m: t.total_invoices_6m ?? 0,
+      });
+    }
+
+    res.json(result);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
