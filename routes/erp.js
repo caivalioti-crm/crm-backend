@@ -1312,7 +1312,19 @@ router.get('/reps', async (req, res) => {
       .not('salesman_code', 'is', null)
       .order('full_name')
     if (error) throw error;
-    res.json(data ?? []);
+
+    // tenure_from lets the dashboard suppress a growth percentage when the
+    // comparison period predates this rep's hold on the code (see /api/me).
+    const { data: tenures } = await supabase
+      .from('crm_rep_code_assignments')
+      .select('salesman_code, valid_from')
+      .is('valid_to', null);
+    const fromByCode = new Map((tenures ?? []).map(t => [String(t.salesman_code), t.valid_from]));
+
+    res.json((data ?? []).map(r => ({
+      ...r,
+      tenure_from: fromByCode.get(String(r.salesman_code)) ?? null,
+    })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

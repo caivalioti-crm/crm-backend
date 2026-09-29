@@ -49,7 +49,21 @@ app.use('/api', authMiddleware, require('./routes/coordinates'));
 app.use('/api', authMiddleware, require('./routes/intelligence'));
 app.use('/api/claims', authMiddleware, claimsRouter);
 app.get('/api/me', authMiddleware, async (req, res) => {
-  res.json(req.user);
+  // tenure_from is when this person took over their Softone code. The dashboard
+  // needs it to tell whether a comparison period predates them: code 1849 only
+  // exists from 2026-01-29, so comparing "my sales" against 2025 is meaningless
+  // and the growth figure must be suppressed rather than shown as +3,800%.
+  let tenure_from = null;
+  if (req.user.salesman_code) {
+    const { data } = await supabase
+      .from('crm_rep_code_assignments')
+      .select('valid_from')
+      .eq('salesman_code', String(req.user.salesman_code))
+      .is('valid_to', null)
+      .maybeSingle();
+    tenure_from = data?.valid_from ?? null;
+  }
+  res.json({ ...req.user, tenure_from });
 });
 
 app.get('/health', (req, res) => {
