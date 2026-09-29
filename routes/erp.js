@@ -50,14 +50,28 @@ async function tenureWindow(salesmanCode, mode) {
   return data;
 }
 
-// Returns the window narrowed to the tenure, or null when the two do not
-// overlap at all (e.g. the comparison period predates a temp account, in which
-// case that rep genuinely has nothing to show for it).
+// Narrows the window to the tenure WHEN THE TWO OVERLAP.
+//
+// When they do not overlap at all the window is returned untouched, which means
+// the figure falls back to what the CODE did in that period, whoever held it.
+// That is deliberate and it is what makes the comparison column useful: the
+// dashboard asks for the current period and the comparison period through the
+// same endpoint with no flag distinguishing them, so this is also the only way
+// to tell them apart.
+//
+// For the temp account on 1721 that yields:
+//   current     Jan-Sep 2026, overlaps the tenure -> clamped to 26/9 -> EUR 6,439
+//   comparison  Jan-Sep 2025, no overlap          -> unclamped       -> EUR 455,647
+// i.e. its own work measured against what ΒΑΚΟΥΦΤΣΗΣ did on the same route.
+//
+// The growth percentage that produces is meaningless while the current period is
+// four days long, and becomes meaningful as the account accumulates months.
 function clampToTenure(from, to, tenure) {
   if (!tenure) return { from, to };
   const lo = tenure.valid_from && tenure.valid_from > from ? tenure.valid_from : from;
   const hi = tenure.valid_to   && tenure.valid_to   < to   ? tenure.valid_to   : to;
-  return lo > hi ? null : { from: lo, to: hi };
+  if (lo > hi) return { from, to };   // no overlap -> show the code's own history
+  return { from: lo, to: hi };
 }
 
 // Customers list
@@ -296,7 +310,6 @@ router.get('/sales/monthly', async (req, res) => {
 
     const mode = attributionMode(req);
     const win = clampToTenure(from, to, await tenureWindow(salesmanCode, mode));
-    if (!win) return res.json([]);
 
     const { data: findocs, error } = await supabase
       .from('stg_soft1_findoc')
@@ -378,7 +391,6 @@ router.get('/sales', async (req, res) => {
       to   || new Date().toISOString().split('T')[0],
       tenure
     );
-    if (!win) return res.json([]);   // window lies entirely outside this holder's tenure
 
     const { data, error } = await supabase.rpc('get_sales_summary', {
       p_from: win.from,
@@ -437,14 +449,14 @@ router.get('/sales/by-area', async (req, res) => {
     const winCmp = clampToTenure(compareFrom || '2022-01-01', compareTo || new Date().toISOString().split('T')[0], tenure);
 
     const [current, compare] = await Promise.all([
-      winNow ? supabase.rpc('get_sales_by_area', {
+      supabase.rpc('get_sales_by_area', {
         p_from: winNow.from, p_to: winNow.to,
         p_salesman_code: salesmanCode, p_mode: mode,
-      }) : Promise.resolve({ data: [] }),
-      winCmp ? supabase.rpc('get_sales_by_area', {
+      }),
+      supabase.rpc('get_sales_by_area', {
         p_from: winCmp.from, p_to: winCmp.to,
         p_salesman_code: salesmanCode, p_mode: mode,
-      }) : Promise.resolve({ data: [] }),
+      }),
     ]);
 
     if (current.error) return res.status(500).json({ error: current.error.message });
@@ -481,14 +493,14 @@ router.get('/sales/by-city', async (req, res) => {
     const winCmp = clampToTenure(compareFrom || '2022-01-01', compareTo || new Date().toISOString().split('T')[0], tenure);
 
     const [current, compare] = await Promise.all([
-      winNow ? supabase.rpc('get_sales_by_city', {
+      supabase.rpc('get_sales_by_city', {
         p_from: winNow.from, p_to: winNow.to, p_area: area || null,
         p_salesman_code: salesmanCode, p_mode: mode,
-      }) : Promise.resolve({ data: [] }),
-      winCmp ? supabase.rpc('get_sales_by_city', {
+      }),
+      supabase.rpc('get_sales_by_city', {
         p_from: winCmp.from, p_to: winCmp.to, p_area: area || null,
         p_salesman_code: salesmanCode, p_mode: mode,
-      }) : Promise.resolve({ data: [] }),
+      }),
     ]);
 
     if (current.error) return res.status(500).json({ error: current.error.message });
