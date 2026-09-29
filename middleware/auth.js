@@ -12,6 +12,21 @@ const adminClient = createClient(
   }
 );
 
+// The `coords` role (e.g. Periklis Christou) is a locked-down account that can
+// ONLY use the coordinate-cleanup tool — it must never reach any sales/revenue
+// endpoint. This is the real security boundary; the UI hiding is cosmetic.
+const COORDS_ALLOWED = [
+  { method: 'GET',   re: /^\/api\/me\/?$/ },
+  { method: 'GET',   re: /^\/api\/coordinates\/?$/ },
+  { method: 'PATCH', re: /^\/api\/coordinates\/[^/]+\/?$/ },
+  { method: 'GET',   re: /^\/api\/coordinate-tiers\/?$/ },
+];
+
+function coordsRoleAllowed(req) {
+  const path = (req.originalUrl || req.url || '').split('?')[0];
+  return COORDS_ALLOWED.some(r => r.method === req.method && r.re.test(path));
+}
+
 async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
 
@@ -38,6 +53,10 @@ async function authMiddleware(req, res, next) {
 
   if (!profile.is_active) {
     return res.status(403).json({ error: 'Account disabled' });
+  }
+
+  if (profile.role === 'coords' && !coordsRoleAllowed(req)) {
+    return res.status(403).json({ error: 'This account is limited to the coordinates tool' });
   }
 
   req.user = {
