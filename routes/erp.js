@@ -74,6 +74,55 @@ function clampToTenure(from, to, tenure) {
   return { from: lo, to: hi };
 }
 
+// Like-for-like filters. The client sends the cut-off dates, so the API stays
+// agnostic about how "new" is defined:
+//   ?newItemsSince=YYYY-MM-DD      drop items activated on the B2B on/after it
+//   ?newCustomersSince=YYYY-MM-DD  drop customers whose card was opened on/after it
+// Absent (or malformed) means no filter, and the RPCs then run their original
+// unfiltered queries — see migrations/2026-09-29_like-for-like-filters.sql.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const likeForLike = (req) => ({
+  p_new_items_since:     ISO_DATE.test(req.query.newItemsSince ?? '')     ? req.query.newItemsSince     : null,
+  p_new_customers_since: ISO_DATE.test(req.query.newCustomersSince ?? '') ? req.query.newCustomersSince : null,
+});
+
+// Ids of items activated on the B2B on/after `since` (a few thousand at most).
+async function fetchNewItemIds(since) {
+  const { data, error } = await supabase
+    .from('stg_soft1_mtrl')
+    .select('mtrl')
+    .eq('company', 1000)
+    .gte('cccdateportal', since)
+    .limit(20000);
+  if (error) throw error;
+  return new Set((data ?? []).map(m => String(m.mtrl)));
+}
+
+// Per document, the share of its line value that is NOT new items. Document
+// amounts are header NETAMNT, so they are scaled by this rather than rebuilt
+// from lines: the same rule as crm_sales_docs_filtered() in the database.
+async function fetchKeepShare(findocIds, since) {
+  const cutYear = Number(since.slice(0, 4));
+  const totals = new Map();
+  const BATCH = 100;
+  for (let i = 0; i < findocIds.length; i += BATCH) {
+    const { data, error } = await supabase
+      .from('mv_crm_doc_item_years')
+      .select('findoc, act_year, lineval')
+      .in('findoc', findocIds.slice(i, i + BATCH));
+    if (error) throw error;
+    for (const y of data ?? []) {
+      const t = totals.get(y.findoc) ?? { all: 0, fresh: 0 };
+      t.all += Number(y.lineval ?? 0);
+      if (y.act_year >= cutYear) t.fresh += Number(y.lineval ?? 0);
+      totals.set(y.findoc, t);
+    }
+  }
+  const keep = new Map();
+  for (const [findoc, t] of totals) keep.set(findoc, t.all ? 1 - t.fresh / t.all : 1);
+  return keep;
+}
+
 // Customers list
 router.get('/customers', async (req, res) => {
   try {
@@ -174,6 +223,7 @@ const ALL_SERIES     = [7021, 7025, 7026, 7027, 7061, 7062, 7080, 7063, 7064, 99
 
 // Customer sales — monthly grouped
 router.get('/customers/:code/sales', async (req, res) => {
+ try {
   const { code } = req.params;
   const { from, to } = req.query;
 
@@ -197,14 +247,25 @@ const { findocs, netamntMap } = await fetchCustomerFindocs(
     .filter(r => INVOICE_SERIES.includes(r.series))
     .map(r => r.findoc);
 
+  // Without-new-items: scale amounts by the non-new share and skip new-item
+  // lines in the quantities.
+  const { p_new_items_since } = likeForLike(req);
+  const [newItemIds, keepShare] = p_new_items_since
+    ? await Promise.all([
+        fetchNewItemIds(p_new_items_since),
+        fetchKeepShare(findocs.map(f => f.findoc), p_new_items_since),
+      ])
+    : [null, new Map()];
+
   let qtyByFindoc = new Map();
   if (invoiceFindocIds.length > 0) {
     const { data: lines } = await supabase
       .from('stg_soft1_mtrlines')
-      .select('findoc, qty')
+      .select('findoc, qty, mtrl')
       .eq('company', 1000)
       .in('findoc', invoiceFindocIds);
     for (const line of lines ?? []) {
+      if (newItemIds?.has(String(line.mtrl))) continue;
       qtyByFindoc.set(line.findoc, (qtyByFindoc.get(line.findoc) ?? 0) + Number(line.qty ?? 0));
     }
   }
@@ -213,7 +274,7 @@ const { findocs, netamntMap } = await fetchCustomerFindocs(
   findocs.forEach(row => {
     const month = (row.trndate ?? '').slice(0, 7);
     if (!month) return;
-    const amount = netamntMap.get(row.findoc) ?? 0;
+    const amount = (netamntMap.get(row.findoc) ?? 0) * (keepShare.get(row.findoc) ?? 1);
     const isCreditNote = CREDIT_SERIES.includes(row.series);
     if (!byMonth[month]) byMonth[month] = { netamnt: 0, qty: 0 };
     byMonth[month].netamnt += isCreditNote ? -amount : amount;
@@ -225,6 +286,10 @@ const { findocs, netamntMap } = await fetchCustomerFindocs(
     .sort((a, b) => b.month.localeCompare(a.month));
 
   res.json(result);
+ } catch (err) {
+  console.error(err);
+  res.status(500).json({ error: err.message });
+ }
 });
 
 // Customer documents — last 5 per type, using fincode where available
@@ -310,6 +375,22 @@ router.get('/sales/monthly', async (req, res) => {
 
     const mode = attributionMode(req);
     const win = clampToTenure(from, to, await tenureWindow(salesmanCode, mode));
+
+    // With a like-for-like filter on, the per-document new-item share lives in
+    // the database, so the aggregation moves there too. Same series and the same
+    // [from, to) window as the path below.
+    const lfl = likeForLike(req);
+    if (lfl.p_new_items_since || lfl.p_new_customers_since) {
+      const { data, error } = await supabase.rpc('get_sales_monthly', {
+        p_from: win.from,
+        p_to:   win.to,
+        p_salesman_code: salesmanCode,
+        p_mode: mode,
+        ...lfl,
+      });
+      if (error) throw error;
+      return res.json((data ?? []).map(r => ({ month: r.month, netamnt: Number(r.netamnt ?? 0) })));
+    }
 
     const { data: findocs, error } = await supabase
       .from('stg_soft1_findoc')
@@ -397,6 +478,7 @@ router.get('/sales', async (req, res) => {
       p_to:   win.to,
       p_salesman_code: salesmanCode,
       p_mode: mode,
+      ...likeForLike(req),
     });
 
     if (error) {
@@ -452,10 +534,12 @@ router.get('/sales/by-area', async (req, res) => {
       supabase.rpc('get_sales_by_area', {
         p_from: winNow.from, p_to: winNow.to,
         p_salesman_code: salesmanCode, p_mode: mode,
+        ...likeForLike(req),
       }),
       supabase.rpc('get_sales_by_area', {
         p_from: winCmp.from, p_to: winCmp.to,
         p_salesman_code: salesmanCode, p_mode: mode,
+        ...likeForLike(req),
       }),
     ]);
 
@@ -496,10 +580,12 @@ router.get('/sales/by-city', async (req, res) => {
       supabase.rpc('get_sales_by_city', {
         p_from: winNow.from, p_to: winNow.to, p_area: area || null,
         p_salesman_code: salesmanCode, p_mode: mode,
+        ...likeForLike(req),
       }),
       supabase.rpc('get_sales_by_city', {
         p_from: winCmp.from, p_to: winCmp.to, p_area: area || null,
         p_salesman_code: salesmanCode, p_mode: mode,
+        ...likeForLike(req),
       }),
     ]);
 
@@ -638,6 +724,8 @@ router.get('/customers/:code/sales-by-category', async (req, res) => {
       p_area:           null,
       p_city:           null,
       p_customer_code:  code,
+      // A single customer is never "new" to themselves: only the item filter applies.
+      p_new_items_since: likeForLike(req).p_new_items_since,
     });
 
     if (error) throw error;
@@ -668,8 +756,12 @@ router.get('/customers/:code/skus-by-category', async (req, res) => {
     const { data, error } = await query;
     if (error) throw error;
 
+    const { p_new_items_since } = likeForLike(req);
+    const newItemIds = p_new_items_since ? await fetchNewItemIds(p_new_items_since) : null;
+
     const skuMap = new Map();
     for (const row of data ?? []) {
+      if (newItemIds?.has(String(row.mtrl_id))) continue;
       const key = row.mtrl_id;
       if (!skuMap.has(key)) {
         skuMap.set(key, { mtrl_id: row.mtrl_id, sku_code: row.sku_code, sku_name: row.sku_name, category_id: row.category_id, revenue: 0, qty: 0 });
@@ -713,6 +805,7 @@ router.get('/sales-by-category', async (req, res) => {
       p_area:          area  || null,
       p_city:          city  || null,
       p_customer_code: null,
+      ...likeForLike(req),
     });
 
     if (error) throw error;
@@ -740,6 +833,7 @@ router.get('/skus-by-category', async (req, res) => {
       p_city:          city       || null,
       p_category_id:   categoryId ? parseInt(categoryId) : null,
       p_customer_code: null,
+      ...likeForLike(req),
     });
 
     if (error) throw error;
@@ -782,6 +876,7 @@ router.get('/top-customers-by-category', async (req, res) => {
       p_area:          area || null,
       p_city:          city || null,
       p_limit:         10,
+      ...likeForLike(req),
     });
 
     if (error) throw error;
@@ -803,6 +898,7 @@ router.get('/customer-category-rank', async (req, res) => {
       p_customer_code: customerCode,
       p_category_id:   parseInt(categoryId),
       p_area:          area || null,
+      ...likeForLike(req),
     });
 
     if (error) throw error;
@@ -979,10 +1075,15 @@ if (!customerData) return res.status(404).json({ error: 'Not found' });
     netamntMap = new Map(allNetamnts.map(n => [n.findoc, Number(n.netamnt ?? 0)]));
   }
 
+  const { p_new_items_since } = likeForLike(req);
+  const keepShare = p_new_items_since && findocIds.length > 0
+    ? await fetchKeepShare(findocIds, p_new_items_since)
+    : new Map();
+
   const map = {};
   for (const row of data ?? []) {
     const key = row.trdbranch !== null ? String(row.trdbranch) : 'hq';
-    const amount = netamntMap.get(row.findoc) ?? 0;
+    const amount = (netamntMap.get(row.findoc) ?? 0) * (keepShare.get(row.findoc) ?? 1);
     const net = CREDIT_SERIES.includes(row.series) ? -amount : amount;
     map[key] = (map[key] ?? 0) + net;
   }
