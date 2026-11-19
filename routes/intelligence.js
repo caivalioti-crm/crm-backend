@@ -80,30 +80,23 @@ async function customerBoughtAmong(trdrId, candidateMtrls, recentCutoff) {
   const ids = [...new Set(candidateMtrls.map(String))];   // stg_soft1_mtrlines.mtrl is text
   if (!ids.length || trdrId == null) return { ever: new Set(), recent: new Set() };
 
-  let lines = [];
-  for (const c of chunk(ids, 100)) {
-    const { data } = await supabase.from('stg_soft1_mtrlines')
-      .select('mtrl, findoc').eq('company', COMPANY).in('mtrl', c);
-    lines.push(...(data ?? []));
+  // One RPC: starts from this customer's documents and joins their lines, instead of
+  // pulling every line of every candidate item (all customers) and then thousands of
+  // findoc lookups. See migrations/2026-11-19_customer-bought-among.sql.
+  const ever = new Set(), recent = new Set();
+  for (const c of chunk(ids, 1000)) {
+    const { data, error } = await supabase.rpc('customer_bought_among', {
+      p_trdr: String(trdrId),
+      p_mtrls: c,
+      p_recent_cutoff: recentCutoff || null,
+    });
+    if (error) throw error;
+    (data ?? []).forEach(r => {
+      const m = String(r.mtrl);
+      ever.add(m);
+      if (r.recent) recent.add(m);
+    });
   }
-  if (!lines.length) return { ever: new Set(), recent: new Set() };
-
-  const findocIds = [...new Set(lines.map(l => l.findoc))];
-  const docMap = new Map();
-  for (const c of chunk(findocIds, 200)) {
-    const { data } = await supabase.from('stg_soft1_findoc')
-      .select('findoc, trdr, trndate').eq('company', COMPANY).in('findoc', c);
-    (data ?? []).forEach(d => docMap.set(d.findoc, d));
-  }
-
-  const ever = new Set(), recent = new Set(), trdrStr = String(trdrId);
-  lines.forEach(l => {
-    const d = docMap.get(l.findoc);
-    if (!d || String(d.trdr) !== trdrStr) return;       // not this customer's document
-    const m = String(l.mtrl);
-    ever.add(m);
-    if (recentCutoff && d.trndate && String(d.trndate) >= recentCutoff) recent.add(m);
-  });
   return { ever, recent };
 }
 
